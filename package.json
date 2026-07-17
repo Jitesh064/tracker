@@ -1,0 +1,9 @@
+{
+  "name": "joint-ledger",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Household finance tracker - salary slips, card statements, cash & investments, assets.",
+  "dependencies": {
+    "@vercel/blob": "^2.6.1"
+  }
+}
