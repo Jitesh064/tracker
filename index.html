@@ -72,8 +72,9 @@
   .card-title .eyebrow{ font-family:var(--font-ui); font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:var(--ink-faint); font-weight:600;}
 
   .grid-3{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .grid-4{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; }
   .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  @media(max-width:900px){ .grid-3{grid-template-columns:1fr;} .grid-2{grid-template-columns:1fr;} main{padding:20px;} .sidebar{width:180px;} }
+  @media(max-width:900px){ .grid-3{grid-template-columns:1fr;} .grid-4{grid-template-columns:repeat(2,1fr);} .grid-2{grid-template-columns:1fr;} main{padding:20px;} .sidebar{width:180px;} }
 
   .stat-box{ padding:2px 0; }
   .stat-label{ font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--ink-faint); margin-bottom:6px;}
@@ -186,6 +187,7 @@ const STATE = {
   expenses: { a:[], b:[] },
   snapshots: { a:[], b:[] },
   assets: [],
+  recurring: { a:[], b:[] },
   draft: null, // in-progress extraction review object
 };
 let authToken = localStorage.getItem('ledger_token') || '';
@@ -194,6 +196,7 @@ let currentUser = null; // { id, username, name, role }
 const CATEGORY_OPTIONS = ['Groceries','Dining','Travel','Utilities','Shopping','Fuel','Subscriptions','Health','Education','Fees & Charges','Other'];
 const ASSET_CATEGORIES = ['Property','Vehicle','Jewelry','Electronics','Furniture','Other'];
 const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate','Retirement Fund','Other'];
+const FREQUENCY_OPTIONS = ['weekly','monthly','yearly'];
 
 function defaultSettings(){
   return {
@@ -274,6 +277,7 @@ async function loadAll(){
     STATE.expenses = { a: state.expenses_a||[], b: state.expenses_b||[] };
     STATE.snapshots = { a: state.snapshots_a||[], b: state.snapshots_b||[] };
     STATE.assets = state.assets || [];
+    STATE.recurring = { a: state.recurring_a||[], b: state.recurring_b||[] };
     STATE.ready = true;
   }catch(e){
     console.error('loadAll failed', e);
@@ -324,6 +328,11 @@ function money(amount, code){
 function toBase(amount, code){
   const r = STATE.settings.rates[code]; 
   return amount * (r==null ? 1 : r);
+}
+function monthlyEquivalent(amount, freq){
+  if(freq==='weekly') return amount * 52 / 12;
+  if(freq==='yearly') return amount / 12;
+  return amount; // monthly (default)
 }
 function fmtDate(d){
   if(!d) return '—';
@@ -380,6 +389,7 @@ function sidebarHTML(){
     ['dashboard','Dashboard'],
     ['salary','Salary Slips'],
     ['expenses','Card Statements'],
+    ['recurring','Recurring Expenses'],
     ['invest','Cash &amp; Investments'],
     ['assets','Assets'],
     ['settings','Settings'],
@@ -414,6 +424,7 @@ function viewHTML(){
     case 'expenses': return viewExpenses();
     case 'invest': return viewInvest();
     case 'assets': return viewAssets();
+    case 'recurring': return viewRecurring();
     case 'settings': return viewSettings();
     case 'users': return viewUsers();
     default: return '';
@@ -446,13 +457,15 @@ function monthExpenseTotalBase(p, monthsBack=0){
 function viewDashboard(){
   const base = STATE.settings.baseCurrency;
   const isHouse = STATE.currentProfile === 'house';
+  const profileKey = isHouse ? 'house' : STATE.currentProfile;
   const profiles = isHouse ? ['a','b'] : [STATE.currentProfile];
   let netWorth = 0, cashInvest = 0, assetsVal = 0, expenseThisMonth = 0;
   profiles.forEach(p=>{
     cashInvest += snapshotTotalBase(latestSnapshot(p));
     expenseThisMonth += monthExpenseTotalBase(p);
   });
-  assetsVal = assetsTotalBase(isHouse?'house':STATE.currentProfile);
+  assetsVal = assetsTotalBase(profileKey);
+  const recurringMonthly = recurringMonthlyTotalBase(profileKey);
   netWorth = cashInvest + assetsVal;
 
   const recentSalaryRows = profiles.flatMap(p => (STATE.salary[p]||[]).map(s=>({...s, _profile:p})))
@@ -463,14 +476,34 @@ function viewDashboard(){
     .sort((x,y)=> (y.statement_date||'').localeCompare(x.statement_date||'')).slice(0,4)
     .map(s=>`<tr><td class="txt">${esc(profileName(s._profile))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td></tr>`).join('');
 
+  const recurringRows = profiles.flatMap(p => (STATE.recurring[p]||[]).filter(r=>r.active!==false).map(r=>({...r,_profile:p})))
+    .sort((x,y)=> toBase(monthlyEquivalent(num(y.amount),y.frequency),y.currency) - toBase(monthlyEquivalent(num(x.amount),x.frequency),x.currency))
+    .slice(0,5)
+    .map(r=>{
+      const monthly = toBase(monthlyEquivalent(num(r.amount), r.frequency), r.currency);
+      return `<tr><td class="txt">${esc(r.name)}</td><td class="txt">${esc(r.category||'Other')}</td><td class="txt">${esc(profileName(r._profile))}</td><td>${money(monthly, base)}<span style="color:var(--ink-faint)">/mo</span></td></tr>`;
+    }).join('');
+
   return `
   <h1 class="page-title">Dashboard</h1>
   <p class="page-sub">${isHouse ? 'Combined household position' : profileName(STATE.currentProfile)+"'s position"} — figures converted to ${esc(base)} using your saved rates.</p>
 
-  <div class="grid-3">
+  <div class="grid-4">
     <div class="ledger-card"><div class="stat-box"><div class="stat-label">Net worth <span class="stamp" style="margin-left:6px;">Est.</span></div><div class="stat-value">${money(netWorth, base)}</div></div></div>
-    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Cash + Investments</div><div class="stat-value">${money(cashInvest, base)}</div></div></div>
-    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Assets on record</div><div class="stat-value">${money(assetsVal, base)}</div></div></div>
+    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Cash + Investments</div><div class="stat-value small">${money(cashInvest, base)}</div></div></div>
+    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Recurring spend</div><div class="stat-value small">${money(recurringMonthly, base)}<span style="font-size:12px;color:var(--ink-faint)">/mo</span></div></div></div>
+    <div class="ledger-card"><div class="stat-box"><div class="stat-label">This month's card spend</div><div class="stat-value small">${money(expenseThisMonth, base)}</div></div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="plain-card">
+      <div class="card-title">Net worth over time <span class="eyebrow">${esc(base)}</span></div>
+      <canvas id="netWorthChart" height="140"></canvas>
+    </div>
+    <div class="plain-card">
+      <div class="card-title">Recurring spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
+      <canvas id="recurringChart" height="140" data-cats='${esc(JSON.stringify(recurringCategoryTotals(profileKey)))}'></canvas>
+    </div>
   </div>
 
   <div class="grid-2">
@@ -485,12 +518,22 @@ function viewDashboard(){
   </div>
 
   <div class="plain-card">
-    <div class="card-title">Net worth over time <span class="eyebrow">${esc(base)}</span></div>
-    <canvas id="netWorthChart" height="90"></canvas>
+    <div class="card-title">Biggest recurring costs <span class="eyebrow">Top 5, monthly equivalent</span></div>
+    ${recurringRows ? `<table><tr><th>Name</th><th>Category</th><th>Who</th><th>Monthly cost</th></tr>${recurringRows}</table>` : `<div class="empty-state">No recurring expenses added yet.</div>`}
   </div>
   `;
 }
-
+function recurringCategoryTotals(profileKey){
+  const profiles = profileKey==='house' ? ['a','b'] : [profileKey];
+  const totals = {};
+  profiles.forEach(p=>{
+    (STATE.recurring[p]||[]).filter(r=>r.active!==false).forEach(r=>{
+      const c = r.category || 'Other';
+      totals[c] = (totals[c]||0) + toBase(monthlyEquivalent(num(r.amount), r.frequency), r.currency);
+    });
+  });
+  return totals;
+}
 function drawNetWorthChart(){
   const canvas = document.getElementById('netWorthChart');
   if(!canvas || typeof Chart==='undefined') return;
@@ -499,7 +542,7 @@ function drawNetWorthChart(){
   const dateSet = new Set();
   profiles.forEach(p=> (STATE.snapshots[p]||[]).forEach(s=> dateSet.add(s.date)));
   const dates = [...dateSet].sort();
-  if(!dates.length){ canvas.parentElement.querySelector('.card-title').insertAdjacentHTML('afterend',''); canvas.style.display='none'; return; }
+  if(!dates.length){ canvas.style.display='none'; return; }
   const series = dates.map(d=>{
     let t = 0;
     profiles.forEach(p=>{
@@ -512,6 +555,18 @@ function drawNetWorthChart(){
     type:'line',
     data:{ labels: dates.map(fmtDate), datasets:[{ label:'Cash + Investments', data: series, borderColor:'#4FD1AE', backgroundColor:'rgba(79,209,174,0.12)', tension:0.25, fill:true, pointRadius:3 }] },
     options:{ plugins:{ legend:{display:false} }, scales:{ x:{ ticks:{color:'#9BA3A6'}, grid:{color:'rgba(120,150,135,0.1)'} }, y:{ ticks:{color:'#9BA3A6'}, grid:{color:'rgba(120,150,135,0.1)'} } } }
+  });
+}
+function drawRecurringChart(){
+  const canvas = document.getElementById('recurringChart');
+  if(!canvas || typeof Chart==='undefined') return;
+  const cats = JSON.parse(canvas.dataset.cats || '{}');
+  const labels = Object.keys(cats);
+  if(!labels.length){ canvas.style.display='none'; return; }
+  new Chart(canvas.getContext('2d'), {
+    type:'doughnut',
+    data:{ labels, datasets:[{ data: labels.map(l=>cats[l]), backgroundColor:['#4FD1AE','#E8A33D','#D9736A','#6FA8DC','#B48EAD','#8FBF8F','#D9B14F','#7C93C3','#C97C7C','#9BA3A6','#5FBFB3'] }] },
+    options:{ plugins:{ legend:{ position:'right', labels:{ color:'#EAE7DE', boxWidth:12, font:{size:11} } } } }
   });
 }
 
@@ -982,6 +1037,130 @@ async function deleteAsset(id){
   render();
 }
 
+/* ============================= RECURRING EXPENSES VIEW ============================= */
+function recurringMonthlyTotalBase(profileFilter){
+  const profiles = profileFilter==='house' ? ['a','b'] : [profileFilter];
+  let total = 0;
+  profiles.forEach(p=>{
+    (STATE.recurring[p]||[]).filter(r=>r.active!==false).forEach(r=>{
+      total += toBase(monthlyEquivalent(num(r.amount), r.frequency), r.currency);
+    });
+  });
+  return total;
+}
+function viewRecurring(){
+  const isHouse = STATE.currentProfile === 'house';
+  if(isHouse) return viewRecurringHousehold();
+  const p = STATE.currentProfile;
+  const list = [...(STATE.recurring[p]||[])].sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+  const monthlyTotal = recurringMonthlyTotalBase(p);
+  const rows = list.map(r=>{
+    const monthly = toBase(monthlyEquivalent(num(r.amount), r.frequency), r.currency);
+    return `<tr>
+      <td class="txt">${esc(r.name)}</td>
+      <td class="txt">${esc(r.category||'Other')}</td>
+      <td>${money(r.amount, r.currency)}</td>
+      <td class="txt">${esc(r.frequency||'monthly')}</td>
+      <td>${money(monthly, STATE.settings.baseCurrency)}<span style="color:var(--ink-faint)">/mo</span></td>
+      <td class="txt">${r.active===false ? '<span style="color:var(--ink-faint)">Paused</span>' : '<span class="pos">Active</span>'}</td>
+      <td>${canEdit() ? `<a class="linklike" onclick="startEditRecurring('${p}','${r.id}')">edit</a> · <button class="icon-btn" onclick="deleteRecurring('${p}','${r.id}')">✕</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <h1 class="page-title">Recurring Expenses</h1>
+  <p class="page-sub">${esc(profileName(p))}'s subscriptions, groceries budget, and other repeating costs.</p>
+
+  <div class="ledger-card" style="margin-bottom:20px;">
+    <div class="stat-label">Estimated recurring spend</div>
+    <div class="stat-value">${money(monthlyTotal, STATE.settings.baseCurrency)}<span style="font-size:14px;color:var(--ink-faint)">/month</span></div>
+  </div>
+
+  ${draftRecurringHTML(p)}
+
+  <div class="plain-card">
+    <div class="card-title">All recurring items <span class="eyebrow">${list.length}</span></div>
+    ${rows ? `<table><tr><th>Name</th><th>Category</th><th>Amount</th><th>Frequency</th><th>Monthly equiv.</th><th>Status</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>`;
+}
+function viewRecurringHousehold(){
+  const rows = ['a','b'].flatMap(p=> (STATE.recurring[p]||[]).map(r=>({...r,_p:p})))
+    .sort((a,b)=>(a.name||'').localeCompare(b.name||''))
+    .map(r=>{
+      const monthly = toBase(monthlyEquivalent(num(r.amount), r.frequency), r.currency);
+      return `<tr><td class="txt">${esc(profileName(r._p))}</td><td class="txt">${esc(r.name)}</td><td class="txt">${esc(r.category||'Other')}</td><td class="txt">${esc(r.frequency||'monthly')}</td><td>${money(monthly, STATE.settings.baseCurrency)}<span style="color:var(--ink-faint)">/mo</span></td><td class="txt">${r.active===false?'Paused':'Active'}</td></tr>`;
+    }).join('');
+  const total = recurringMonthlyTotalBase('house');
+  return `
+  <h1 class="page-title">Recurring Expenses</h1>
+  <p class="page-sub">Combined household subscriptions and repeating costs.</p>
+  <div class="ledger-card" style="margin-bottom:20px;">
+    <div class="stat-label">Combined estimated recurring spend</div>
+    <div class="stat-value">${money(total, STATE.settings.baseCurrency)}<span style="font-size:14px;color:var(--ink-faint)">/month</span></div>
+  </div>
+  <div class="plain-card">
+    <div class="card-title">All recurring items</div>
+    ${rows ? `<table><tr><th>Who</th><th>Name</th><th>Category</th><th>Frequency</th><th>Monthly equiv.</th><th>Status</th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>`;
+}
+function draftRecurringHTML(p){
+  if(!(STATE.draft && STATE.draft.kind==='recurring')){
+    if(!canEdit()) return '';
+    return `<div class="plain-card"><div class="card-title">Add a recurring expense</div><button class="btn" onclick="startAddRecurring('${p}')">+ Add recurring expense</button></div>`;
+  }
+  const d = STATE.draft.data;
+  return `
+  <div class="plain-card">
+    <div class="card-title">${d.id ? 'Edit recurring expense' : 'New recurring expense'}</div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Name</label><input type="text" placeholder="e.g. Netflix, Groceries budget" value="${esc(d.name||'')}" oninput="updateDraftField('name',this.value)"></div>
+      <div class="field"><label class="field-label">Category</label><select onchange="updateDraftField('category',this.value)">${CATEGORY_OPTIONS.map(c=>`<option ${d.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Amount</label><input type="number" step="0.01" value="${d.amount??''}" oninput="updateDraftField('amount',this.value)"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field" style="max-width:150px"><label class="field-label">Frequency</label><select onchange="updateDraftField('frequency',this.value)">${FREQUENCY_OPTIONS.map(f=>`<option value="${f}" ${d.frequency===f?'selected':''}>${f.charAt(0).toUpperCase()+f.slice(1)}</option>`).join('')}</select></div>
+    </div>
+    <div class="field"><label class="field-label">Notes</label><input type="text" value="${esc(d.notes||'')}" oninput="updateDraftField('notes',this.value)"></div>
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;">
+        <input type="checkbox" ${d.active!==false?'checked':''} onchange="updateDraftField('active',this.checked)" style="width:15px;height:15px;">
+        Active (uncheck to pause without deleting)
+      </label>
+    </div>
+    <hr class="divider">
+    <div style="display:flex; gap:10px;">
+      <button class="btn" onclick="saveDraftRecurring('${p}')">Save</button>
+      <button class="btn ghost" onclick="cancelDraft()">Discard</button>
+    </div>
+  </div>`;
+}
+function startAddRecurring(p){
+  STATE.draft = { kind:'recurring', data:{ id:'', name:'', category:'Subscriptions', amount:null, currency:STATE.settings.baseCurrency, frequency:'monthly', notes:'', active:true } };
+  render();
+}
+function startEditRecurring(p, id){
+  const r = (STATE.recurring[p]||[]).find(x=>x.id===id); if(!r) return;
+  STATE.draft = { kind:'recurring', data:{ ...r } };
+  render();
+}
+async function saveDraftRecurring(p){
+  const d = STATE.draft.data;
+  if(!d.name){ alert('Name is required'); return; }
+  const entry = { id: d.id||uid(), name: d.name, category: d.category||'Other', amount: num(d.amount),
+    currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency, frequency: d.frequency||'monthly', notes: d.notes||'', active: d.active!==false };
+  STATE.recurring[p] = STATE.recurring[p].filter(r=>r.id!==entry.id);
+  STATE.recurring[p].push(entry);
+  await apiSave('recurring_'+p, entry);
+  STATE.draft = null;
+  render();
+}
+async function deleteRecurring(p, id){
+  STATE.recurring[p] = STATE.recurring[p].filter(r=>r.id!==id);
+  await apiDelete('recurring_'+p, id);
+  render();
+}
+
 /* ============================= SETTINGS VIEW ============================= */
 function viewSettings(){
   const rates = STATE.settings.rates;
@@ -1038,13 +1217,14 @@ function confirmResetAll(){
   resetAll();
 }
 async function resetAll(){
-  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = {a:[],b:[]}; STATE.assets = [];
+  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = {a:[],b:[]}; STATE.assets = []; STATE.recurring = {a:[],b:[]};
   await Promise.all([
     apiReplace('settings', [STATE.settings]),
     apiReplace('salary_a', []), apiReplace('salary_b', []),
     apiReplace('expenses_a', []), apiReplace('expenses_b', []),
     apiReplace('snapshots_a', []), apiReplace('snapshots_b', []),
-    apiReplace('assets', [])
+    apiReplace('assets', []),
+    apiReplace('recurring_a', []), apiReplace('recurring_b', [])
   ]);
   render();
 }
@@ -1136,7 +1316,7 @@ async function deleteUserAccount(id){
 
 /* ============================= POST-RENDER HOOKS ============================= */
 function afterRenderHooks(){
-  if(STATE.view==='dashboard') drawNetWorthChart();
+  if(STATE.view==='dashboard'){ drawNetWorthChart(); drawRecurringChart(); }
   if(STATE.view==='expenses' && STATE.currentProfile==='house') drawCategoryChart();
   if(STATE.view==='invest' && STATE.currentProfile==='house') drawNetWorthChart();
 }
