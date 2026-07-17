@@ -1,7 +1,7 @@
 const { loadState, saveState } = require('../lib/blob');
 const { verifyToken, getBearerToken } = require('../lib/auth');
 
-const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots_a', 'snapshots_b', 'assets'];
+const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots_a', 'snapshots_b', 'assets', 'recurring_a', 'recurring_b'];
 const ALLOWED_COLLECTIONS = ['settings', ...ARRAY_SECTIONS];
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -13,6 +13,7 @@ function defaultState() {
     expenses_a: [], expenses_b: [],
     snapshots_a: [], snapshots_b: [],
     assets: [],
+    recurring_a: [], recurring_b: [],
   };
 }
 
