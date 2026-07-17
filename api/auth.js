@@ -1,12 +1,12 @@
-const { loadCollection, saveCollection } = require('../lib/blob');
+const { loadJSON, saveJSON } = require('../lib/blob');
 const { signToken, verifyToken, hashPassword, verifyPassword, getBearerToken } = require('../lib/auth');
 
-const USERS_COL = 'auth_users';
+const USERS_PATH = 'auth-users.json';
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-async function getUsers() { return loadCollection(USERS_COL, []); }
-async function saveUsers(u) { return saveCollection(USERS_COL, u); }
+async function getUsers() { return loadJSON(USERS_PATH, []); }
+async function saveUsers(u) { return saveJSON(USERS_PATH, u); }
 
 // If no users exist yet, bootstrap the first admin from env vars (set once, then manage
 // further accounts from the Users page). Keeps a real password out of the codebase.
