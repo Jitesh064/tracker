@@ -15,7 +15,13 @@ module.exports = async (req, res) => {
     res.status(405).json({ error: 'Method not allowed' });
     return;
   }
-  const user = verifyToken(getBearerToken(req));
+  if (!process.env.AUTH_SECRET) {
+    res.status(500).json({ error: 'AUTH_SECRET is not configured on the server. Add it in Vercel → Settings → Environment Variables, then redeploy.' });
+    return;
+  }
+  let user;
+  try{ user = verifyToken(getBearerToken(req)); }
+  catch(e){ res.status(500).json({ error: 'Server error verifying session: ' + e.message }); return; }
   if (!user) { res.status(401).json({ error: 'Not authenticated' }); return; }
   if (user.role === 'viewer') { res.status(403).json({ error: 'Viewers cannot extract new documents' }); return; }
   if (!process.env.ANTHROPIC_API_KEY) {
