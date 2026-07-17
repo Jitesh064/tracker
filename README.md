@@ -9,19 +9,19 @@ keep a reference list of assets. Shared between two profiles, protected by real 
 Same pattern as the SII Logistics Schedule tool:
 
 - **Frontend**: a single static `index.html` (no build step, no framework).
+- **`/api/data`**: a single consolidated JSON file in **Vercel Blob** (`ledger-state.json`)
+  holds everything — settings and every profile's salary/expenses/snapshots/assets. Every
+  read or write is exactly **one** Blob operation, regardless of which section changed.
+- **Sync**: no background timer. The app refreshes when you switch back to the tab or the
+  window regains focus, plus a **Refresh** link in the sidebar for on-demand sync. This (and
+  the single-file design above) is deliberately built to stay comfortably inside Vercel's free
+  Blob tier — see "Staying within the free tier" below.
 - **`/api/auth`**: login, session verification, and admin-only user management. Sessions are
   a signed, stateless token (HMAC-SHA256, no external JWT library) stored in `localStorage`
   and sent as a Bearer token on every request. Passwords are hashed with `scrypt` (Node's
   built-in `crypto`) — never stored in plain text.
-- **`/api/data?col=<name>`**: a generic collection CRUD endpoint — `op: 'save'` upserts one
-  item by id, `op: 'delete'` removes one by id. Each collection (`settings`, `salary_a`,
-  `salary_b`, `expenses_a`, `expenses_b`, `snapshots_a`, `snapshots_b`, `assets`) is its own
-  JSON file in **Vercel Blob**, your shared database. Per-item saves (rather than overwriting
-  a whole array) avoid clobbering each other's edits.
 - **`/api/extract`**: holds your Anthropic API key server-side and reads payslip/SOA images
   or PDFs into structured JSON. Requires a valid session; viewers can't trigger it.
-- The frontend polls `/api/data` every ~15 seconds so both people stay in sync without a
-  manual refresh (paused while a form is open, so it won't overwrite in-progress edits).
 
 ## Roles
 
@@ -29,6 +29,25 @@ Three roles, same as the logistics tool:
 - **Admin** — full access, plus the Users page to add/edit/remove accounts.
 - **Editor** — full access to entries (salary, statements, snapshots, assets), no user management.
 - **Viewer** — read-only.
+
+## Staying within the free tier
+
+Vercel Blob's Hobby (free) plan includes, per month: 1 GB storage, 10,000 read ("simple")
+operations, 2,000 write ("advanced") operations, and 10 GB data transfer. This app is built
+to stay well inside all four:
+
+- **Storage**: your data is a single JSON file, realistically a few KB to a few hundred KB
+  even after years of entries. Nowhere near 1 GB.
+- **Reads**: every load/refresh is exactly 1 Blob read (not 8), and reads only happen when
+  you open the app, switch back to the tab, or hit **Refresh** — not on a timer. Realistic
+  household use (a handful of visits a day, times two people) lands in the tens of reads a
+  month, nowhere near 10,000.
+- **Writes**: one write per save/delete action (adding a salary slip, an expense, a
+  snapshot, an asset). Even active use — a few entries a day — stays far under 2,000/month.
+- **Transfer**: proportional to storage size times read count; at this data size, negligible.
+
+If you ever significantly change the design (e.g. add a continuous background sync, or
+store large images per asset instead of small thumbnails), it's worth revisiting this math.
 
 ## Deploying
 
