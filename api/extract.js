@@ -10,6 +10,8 @@ Return ONLY valid JSON (no markdown fences, no commentary) matching exactly this
 {"statement_date":"YYYY-MM-DD billing/statement date or null","card_name":"bank/card name if visible or null","currency":"3-letter currency code guess","total_amount_due":number or null,"minimum_amount_due":number or null,"transactions":[{"date":"YYYY-MM-DD","merchant":"string","amount":number,"category":"one of Groceries, Dining, Travel, Utilities, Shopping, Fuel, Subscriptions, Health, Education, Fees & Charges, Other"}]}
 Use null for missing fields. Output nothing but the JSON object.`;
 
+const GEMINI_MODEL = 'gemini-2.5-flash'; // free tier: no card required, ample rate limits for household use
+
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
@@ -24,8 +26,8 @@ module.exports = async (req, res) => {
   catch(e){ res.status(500).json({ error: 'Server error verifying session: ' + e.message }); return; }
   if (!user) { res.status(401).json({ error: 'Not authenticated' }); return; }
   if (user.role === 'viewer') { res.status(403).json({ error: 'Viewers cannot extract new documents' }); return; }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured on the server. Add it in Vercel project settings under Environment Variables.' });
+  if (!process.env.GEMINI_API_KEY) {
+    res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server. Add it in Vercel project settings under Environment Variables (get a free key at aistudio.google.com/apikey).' });
     return;
   }
 
@@ -39,34 +41,39 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const isPdf = mimeType === 'application/pdf';
-  const contentBlock = isPdf
-    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
-    : { type: 'image', source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: base64 } };
   const prompt = kind === 'salary' ? SALARY_PROMPT : SOA_PROMPT;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
   try {
-    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+    const apiRes = await fetch(url, {
       method: 'POST',
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: prompt }] }],
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64 } },
+          ],
+        }],
+        generationConfig: {
+          responseMimeType: 'application/json', // asks Gemini to return clean JSON, no fences needed
+          temperature: 0,
+        },
       }),
     });
 
     const data = await apiRes.json();
     if (!apiRes.ok) {
-      res.status(apiRes.status).json({ error: data?.error?.message || 'Anthropic API request failed' });
+      res.status(apiRes.status).json({ error: data?.error?.message || 'Gemini API request failed' });
       return;
     }
 
-    const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+    if (!text) {
+      const blockReason = data?.promptFeedback?.blockReason;
+      res.status(500).json({ error: blockReason ? `Gemini declined to process this file (${blockReason}).` : 'Gemini returned an empty response.' });
+      return;
+    }
     const clean = text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
     res.status(200).json(parsed);
