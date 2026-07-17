@@ -10,7 +10,9 @@ Return ONLY valid JSON (no markdown fences, no commentary) matching exactly this
 {"statement_date":"YYYY-MM-DD billing/statement date or null","card_name":"bank/card name if visible or null","currency":"3-letter currency code guess","total_amount_due":number or null,"minimum_amount_due":number or null,"transactions":[{"date":"YYYY-MM-DD","merchant":"string","amount":number,"category":"one of Groceries, Dining, Travel, Utilities, Shopping, Fuel, Subscriptions, Health, Education, Fees & Charges, Other"}]}
 Use null for missing fields. Output nothing but the JSON object.`;
 
-const GEMINI_MODEL = 'gemini-2.5-flash'; // free tier: no card required, ample rate limits for household use
+// Google renames/retires free-tier models fairly often. Try these in order rather than
+// hard-coding one - if the first is retired, the next still works without a code change.
+const GEMINI_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
@@ -42,43 +44,49 @@ module.exports = async (req, res) => {
   }
 
   const prompt = kind === 'salary' ? SALARY_PROMPT : SOA_PROMPT;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+  const requestBody = JSON.stringify({
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64 } },
+      ],
+    }],
+    generationConfig: {
+      responseMimeType: 'application/json', // asks Gemini to return clean JSON, no fences needed
+      temperature: 0,
+    },
+  });
 
-  try {
-    const apiRes = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64 } },
-          ],
-        }],
-        generationConfig: {
-          responseMimeType: 'application/json', // asks Gemini to return clean JSON, no fences needed
-          temperature: 0,
-        },
-      }),
-    });
+  let lastError = 'Gemini API request failed';
+  for (const model of GEMINI_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+    try {
+      const apiRes = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: requestBody });
+      const data = await apiRes.json();
 
-    const data = await apiRes.json();
-    if (!apiRes.ok) {
-      res.status(apiRes.status).json({ error: data?.error?.message || 'Gemini API request failed' });
+      if (!apiRes.ok) {
+        lastError = data?.error?.message || lastError;
+        // Model retired/unknown/not-yet-available to this key -> try the next one in the list.
+        const retryable = apiRes.status === 404 || /not found|no longer available|not supported/i.test(lastError);
+        if (retryable) continue;
+        res.status(apiRes.status).json({ error: lastError });
+        return;
+      }
+
+      const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+      if (!text) {
+        const blockReason = data?.promptFeedback?.blockReason;
+        res.status(500).json({ error: blockReason ? `Gemini declined to process this file (${blockReason}).` : 'Gemini returned an empty response.' });
+        return;
+      }
+      const clean = text.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+      res.status(200).json(parsed);
       return;
+    } catch (e) {
+      lastError = e.message;
     }
-
-    const text = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
-    if (!text) {
-      const blockReason = data?.promptFeedback?.blockReason;
-      res.status(500).json({ error: blockReason ? `Gemini declined to process this file (${blockReason}).` : 'Gemini returned an empty response.' });
-      return;
-    }
-    const clean = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    res.status(200).json(parsed);
-  } catch (e) {
-    console.error('extract error', e);
-    res.status(500).json({ error: 'Could not extract data from that file: ' + e.message });
   }
+  console.error('extract error, all models failed', lastError);
+  res.status(500).json({ error: 'Could not extract data from that file: ' + lastError });
 };
