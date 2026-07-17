@@ -228,7 +228,6 @@ function showLoginErr(msg){ const el = document.getElementById('l-err'); el.text
 function logout(){
   authToken = ''; currentUser = null;
   localStorage.removeItem('ledger_token');
-  cache = {};
   document.getElementById('login-screen').classList.remove('hidden');
   document.getElementById('l-user').value = ''; document.getElementById('l-pass').value = '';
   document.getElementById('l-err').classList.remove('show');
@@ -240,76 +239,71 @@ async function bootApp(){
   startPolling();
 }
 
-/* ============================= DATA LAYER (generic per-collection CRUD via /api/data) ============================= */
+/* ============================= DATA LAYER (per-collection writes against one consolidated blob) ============================= */
 // Collections: settings (single row), salary_a/b, expenses_a/b, snapshots_a/b, assets
-let cache = {};
-async function apiGet(col){
-  if(cache[col]) return cache[col];
-  try{
-    const r = await fetch('/api/data?col='+col, { headers: authHdr(), cache:'no-store' });
-    if(r.status === 401){ logout(); return []; }
-    const json = await r.json();
-    cache[col] = json.data || [];
-    return cache[col];
-  }catch(e){ console.error('apiGet failed', col, e); return []; }
-}
 async function apiSave(col, item){
-  delete cache[col];
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'save', item }) });
     if(r.status === 401){ logout(); return null; }
-    const json = await r.json();
-    if(json.data) cache[col] = json.data;
-    return json;
+    return await r.json();
   }catch(e){ console.error('apiSave failed', col, e); return null; }
 }
 async function apiDelete(col, id){
-  delete cache[col];
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'delete', id }) });
     if(r.status === 401){ logout(); return null; }
-    const json = await r.json();
-    if(json.data) cache[col] = json.data;
-    return json;
+    return await r.json();
   }catch(e){ console.error('apiDelete failed', col, e); return null; }
 }
 async function apiReplace(col, arr){
-  delete cache[col];
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'replace', data: arr }) });
     if(r.status === 401){ logout(); return null; }
-    const json = await r.json();
-    if(json.data) cache[col] = json.data;
-    return json;
+    return await r.json();
   }catch(e){ console.error('apiReplace failed', col, e); return null; }
 }
 
 async function loadAll(){
-  const [settingsRows, salA, salB, expA, expB, snpA, snpB, assets] = await Promise.all([
-    apiGet('settings'), apiGet('salary_a'), apiGet('salary_b'),
-    apiGet('expenses_a'), apiGet('expenses_b'), apiGet('snapshots_a'), apiGet('snapshots_b'), apiGet('assets')
-  ]);
-  STATE.settings = (settingsRows && settingsRows[0]) || defaultSettings();
-  STATE.salary = { a: salA||[], b: salB||[] };
-  STATE.expenses = { a: expA||[], b: expB||[] };
-  STATE.snapshots = { a: snpA||[], b: snpB||[] };
-  STATE.assets = assets || [];
-  STATE.ready = true;
+  try{
+    const r = await fetch('/api/data', { headers: authHdr(), cache:'no-store' });
+    if(r.status === 401){ logout(); return; }
+    const json = await r.json();
+    const state = json.data || {};
+    STATE.settings = state.settings || defaultSettings();
+    STATE.salary = { a: state.salary_a||[], b: state.salary_b||[] };
+    STATE.expenses = { a: state.expenses_a||[], b: state.expenses_b||[] };
+    STATE.snapshots = { a: state.snapshots_a||[], b: state.snapshots_b||[] };
+    STATE.assets = state.assets || [];
+    STATE.ready = true;
+  }catch(e){
+    console.error('loadAll failed', e);
+    if(!STATE.settings) STATE.settings = defaultSettings();
+    STATE.ready = true;
+  }
 }
 async function saveSettings(){ await apiSave('settings', STATE.settings); }
 
-// Lightweight polling so both partners see updates without a manual refresh.
-// Skipped while a draft (unsaved form) is open so it never clobbers in-progress edits.
-function startPolling(){
-  setInterval(async ()=>{
-    if(!authToken || STATE.draft) return;
-    const prevView = STATE.view, prevProfile = STATE.currentProfile;
-    cache = {};
-    await loadAll();
-    STATE.view = prevView; STATE.currentProfile = prevProfile;
-    render();
-  }, 15000);
+// Event-driven sync instead of a constant timer: refresh when you come back to the tab
+// (visibility/focus), plus a manual "Refresh" link. This keeps Vercel Blob read counts low
+// enough to stay within the free tier - a fixed-interval poll running the whole time the
+// app is open adds up fast across two people.
+let lastSyncAt = 0;
+const MIN_SYNC_GAP_MS = 10000;
+async function syncNow(force){
+  if(!authToken || STATE.draft) return;
+  const now = Date.now();
+  if(!force && now - lastSyncAt < MIN_SYNC_GAP_MS) return;
+  lastSyncAt = now;
+  const prevView = STATE.view, prevProfile = STATE.currentProfile;
+  await loadAll();
+  STATE.view = prevView; STATE.currentProfile = prevProfile;
+  render();
 }
+function startPolling(){
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') syncNow(false); });
+  window.addEventListener('focus', ()=> syncNow(false));
+}
+function manualRefresh(){ syncNow(true); }
 
 /* ============================= HELPERS ============================= */
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
@@ -403,6 +397,9 @@ function sidebarHTML(){
     <div class="user-row">
       <div class="avatar">${esc((currentUser?.name||currentUser?.username||'?').charAt(0).toUpperCase())}</div>
       <div class="user-meta"><div class="un">${esc(currentUser?.name||currentUser?.username||'')}</div><div class="role-badge">${esc(roleLabel)}</div></div>
+    </div>
+    <div style="display:flex; gap:10px; margin-bottom:4px;">
+      <span class="logout-link" onclick="manualRefresh()">Refresh</span>
       <span class="logout-link" onclick="logout()">Sign out</span>
     </div>
     <div class="profile-switch">${profBtns}</div>
@@ -1020,7 +1017,7 @@ function viewSettings(){
 
   <div class="plain-card">
     <div class="card-title">Data &amp; privacy</div>
-    <div class="notice">Everything saved here — salary, statements, snapshots, assets — lives in one shared database. Anyone with a login on this site can see it, and updates sync between accounts within about 15 seconds. Manage who has access under <strong>Users</strong> (admin only).</div>
+    <div class="notice">Everything saved here — salary, statements, snapshots, assets — lives in one shared database. Anyone with a login on this site can see it. Updates sync automatically when you switch back to this tab, or anytime via the <strong>Refresh</strong> link in the sidebar. Manage who has access under <strong>Users</strong> (admin only).</div>
     ${currentUser?.role==='admin' ? `<div style="margin-top:14px;"><button class="btn danger" onclick="confirmResetAll()">Clear all data</button></div>` : ''}
   </div>`;
 }
