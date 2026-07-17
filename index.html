@@ -197,12 +197,16 @@ const CATEGORY_OPTIONS = ['Groceries','Dining','Travel','Utilities','Shopping','
 const ASSET_CATEGORIES = ['Property','Vehicle','Jewelry','Electronics','Furniture','Other'];
 const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate','Retirement Fund','Other'];
 const FREQUENCY_OPTIONS = ['weekly','monthly','yearly'];
+const CURRENCY_SUGGESTIONS = ['PHP','USD','INR','SGD','MYR','IDR','THB','VND','EUR','GBP','AED','AUD','JPY','HKD','KRW','CNY'];
+function currencyDatalistHTML(){
+  return `<datalist id="ledgerCurrencyList">${CURRENCY_SUGGESTIONS.map(c=>`<option value="${c}">`).join('')}</datalist>`;
+}
 
 function defaultSettings(){
   return {
     id:'settings',
     baseCurrency:'PHP',
-    rates:{ PHP:1, USD:58, EUR:63, SGD:43, GBP:73, AED:15.8, JPY:0.39, AUD:38 },
+    rates:{ PHP:1, USD:58, EUR:63, SGD:43, GBP:73, AED:15.8, JPY:0.39, AUD:38, INR:0.70, THB:1.65, VND:0.0023, IDR:0.0036, MYR:12.3 },
     profileNames:{ a:'Jitesh', b:'Partner' }
   };
 }
@@ -381,7 +385,7 @@ async function extractDocument(base64, mimeType, kind){
 function render(){
   const app = document.getElementById('app');
   if(!STATE.ready){ app.innerHTML = '<div style="padding:60px;color:var(--ink-dim);font-family:var(--font-ui)">Loading your ledger…</div>'; return; }
-  app.innerHTML = sidebarHTML() + `<main>${viewHTML()}</main>`;
+  app.innerHTML = sidebarHTML() + `<main>${viewHTML()}</main>` + currencyDatalistHTML();
   afterRenderHooks();
 }
 function sidebarHTML(){
@@ -441,6 +445,23 @@ function snapshotTotalBase(s){
   (s.cash||[]).forEach(c=> t += toBase(num(c.amount), c.currency));
   (s.investments||[]).forEach(i=> t += toBase(num(i.value), i.currency));
   return t;
+}
+function snapshotCurrencyTotals(s){
+  const totals = {};
+  if(!s) return totals;
+  (s.cash||[]).forEach(c=>{ const code=(c.currency||'').toUpperCase()||STATE.settings.baseCurrency; totals[code]=(totals[code]||0)+num(c.amount); });
+  (s.investments||[]).forEach(i=>{ const code=(i.currency||'').toUpperCase()||STATE.settings.baseCurrency; totals[code]=(totals[code]||0)+num(i.value); });
+  return totals;
+}
+function mergeCurrencyTotals(...totalsList){
+  const merged = {};
+  totalsList.forEach(t=> Object.keys(t).forEach(code=> merged[code]=(merged[code]||0)+t[code]));
+  return merged;
+}
+function currencyPillsHTML(totals){
+  const codes = Object.keys(totals).sort((a,b)=> toBase(totals[b],b)-toBase(totals[a],a));
+  if(!codes.length) return '<span style="color:var(--ink-faint)">—</span>';
+  return codes.map(code=>`<span class="pill">${money(totals[code], code)}</span>`).join(' ');
 }
 function assetsTotalBase(profileFilter){
   return STATE.assets.filter(a=> profileFilter==='house' ? true : a.owner===profileFilter)
@@ -640,7 +661,7 @@ function draftSalaryHTML(p){
     <div class="field-row">
       <div class="field"><label class="field-label">Pay date</label><input type="date" value="${esc(d.pay_date||'')}" oninput="updateDraftField('pay_date',this.value)"></div>
       <div class="field"><label class="field-label">Employer</label><input type="text" value="${esc(d.employer||'')}" oninput="updateDraftField('employer',this.value)"></div>
-      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
     </div>
     <div class="field-row">
       <div class="field"><label class="field-label">Gross pay</label><input type="number" step="0.01" value="${d.gross_pay??''}" oninput="updateDraftField('gross_pay',this.value)"></div>
@@ -805,7 +826,7 @@ function draftExpenseHTML(p){
     <div class="field-row">
       <div class="field"><label class="field-label">Statement date</label><input type="date" value="${esc(d.statement_date||'')}" oninput="updateDraftField('statement_date',this.value)"></div>
       <div class="field"><label class="field-label">Card / bank</label><input type="text" value="${esc(d.card_name||'')}" oninput="updateDraftField('card_name',this.value)"></div>
-      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
     </div>
     <div class="field"><label class="field-label">Total amount due</label><input type="number" step="0.01" value="${d.total_amount_due??''}" oninput="updateDraftField('total_amount_due',this.value)"></div>
     <label class="field-label">Transactions</label>
@@ -860,39 +881,42 @@ function viewInvest(){
   if(isHouse) return viewInvestHousehold();
   const p = STATE.currentProfile;
   const list = [...(STATE.snapshots[p]||[])].sort((a,b)=> b.date.localeCompare(a.date));
+  const latest = latestSnapshot(p);
+  const latestTotals = snapshotCurrencyTotals(latest);
   const rows = list.map(s=>{
-    const total = snapshotTotalBase(s);
-    return `<tr><td class="txt">${fmtDate(s.date)}</td><td class="txt">${(s.cash||[]).length} cash · ${(s.investments||[]).length} holdings</td><td>${money(total, STATE.settings.baseCurrency)}</td><td>${canEdit() ? `<button class="icon-btn" onclick="deleteSnapshot('${p}','${s.id}')">✕</button>` : ''}</td></tr>`;
+    return `<tr><td class="txt">${fmtDate(s.date)}</td><td>${currencyPillsHTML(snapshotCurrencyTotals(s))}</td><td>${canEdit() ? `<button class="icon-btn" onclick="deleteSnapshot('${p}','${s.id}')">✕</button>` : ''}</td></tr>`;
   }).join('');
 
   return `
   <h1 class="page-title">Cash &amp; Investments</h1>
   <p class="page-sub">Record ${esc(profileName(p))}'s position as of a given date, in whatever currencies apply.</p>
 
+  <div class="plain-card">
+    <div class="card-title">Currency breakdown <span class="eyebrow">${latest ? 'As of '+fmtDate(latest.date) : 'No snapshot yet'}</span></div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px;">${currencyPillsHTML(latestTotals)}</div>
+  </div>
+
   ${draftSnapshotHTML(p)}
 
   <div class="plain-card">
     <div class="card-title">Snapshots over time <span class="eyebrow">${list.length} recorded</span></div>
-    ${rows ? `<table><tr><th>As of</th><th>Contents</th><th>Total (${esc(STATE.settings.baseCurrency)})</th><th></th></tr>${rows}</table>` : `<div class="empty-state">No snapshots yet — add one above.</div>`}
+    ${rows ? `<table><tr><th>As of</th><th>By currency</th><th></th></tr>${rows}</table>` : `<div class="empty-state">No snapshots yet — add one above.</div>`}
   </div>`;
 }
 function viewInvestHousehold(){
   const latestA = latestSnapshot('a'), latestB = latestSnapshot('b');
-  const totalA = snapshotTotalBase(latestA), totalB = snapshotTotalBase(latestB);
+  const totalsA = snapshotCurrencyTotals(latestA), totalsB = snapshotCurrencyTotals(latestB);
+  const combinedTotals = mergeCurrencyTotals(totalsA, totalsB);
   return `
   <h1 class="page-title">Cash &amp; Investments</h1>
   <p class="page-sub">Combined household position, using each person's most recent snapshot.</p>
+  <div class="plain-card">
+    <div class="card-title">Currency breakdown <span class="eyebrow">Combined, latest snapshots</span></div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px;">${currencyPillsHTML(combinedTotals)}</div>
+  </div>
   <div class="grid-2">
-    <div class="ledger-card"><div class="stat-label">${esc(profileName('a'))} — as of ${latestA?fmtDate(latestA.date):'—'}</div><div class="stat-value">${money(totalA, STATE.settings.baseCurrency)}</div></div>
-    <div class="ledger-card"><div class="stat-label">${esc(profileName('b'))} — as of ${latestB?fmtDate(latestB.date):'—'}</div><div class="stat-value">${money(totalB, STATE.settings.baseCurrency)}</div></div>
-  </div>
-  <div class="plain-card">
-    <div class="card-title">Combined total</div>
-    <div class="stat-value" style="font-size:26px;">${money(totalA+totalB, STATE.settings.baseCurrency)}</div>
-  </div>
-  <div class="plain-card">
-    <div class="card-title">Trend</div>
-    <canvas id="netWorthChart" height="90"></canvas>
+    <div class="ledger-card"><div class="stat-label">${esc(profileName('a'))} — as of ${latestA?fmtDate(latestA.date):'—'}</div><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">${currencyPillsHTML(totalsA)}</div></div>
+    <div class="ledger-card"><div class="stat-label">${esc(profileName('b'))} — as of ${latestB?fmtDate(latestB.date):'—'}</div><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">${currencyPillsHTML(totalsB)}</div></div>
   </div>`;
 }
 function draftSnapshotHTML(p){
@@ -906,13 +930,13 @@ function draftSnapshotHTML(p){
   const d = STATE.draft.data;
   const cashRows = (d.cash||[]).map((c,i)=>`
     <tr><td><input type="text" placeholder="e.g. BPI Savings" value="${esc(c.label||'')}" oninput="updateDraftRow('cash',${i},'label',this.value)"></td>
-    <td style="max-width:90px;"><input type="text" value="${esc(c.currency||STATE.settings.baseCurrency)}" oninput="updateDraftRow('cash',${i},'currency',this.value.toUpperCase())"></td>
+    <td style="max-width:90px;"><input type="text" list="ledgerCurrencyList" value="${esc(c.currency||STATE.settings.baseCurrency)}" oninput="updateDraftRow('cash',${i},'currency',this.value.toUpperCase())"></td>
     <td><input type="number" step="0.01" value="${c.amount??0}" oninput="updateDraftRow('cash',${i},'amount',this.value)"></td>
     <td><button class="icon-btn" onclick="removeDraftRow('cash',${i})">✕</button></td></tr>`).join('');
   const invRows = (d.investments||[]).map((iv,i)=>`
     <tr><td><input type="text" placeholder="e.g. VOO, Pag-IBIG MP2" value="${esc(iv.name||'')}" oninput="updateDraftRow('investments',${i},'name',this.value)"></td>
     <td><select onchange="updateDraftRow('investments',${i},'type',this.value)">${INVESTMENT_TYPES.map(t=>`<option ${iv.type===t?'selected':''}>${t}</option>`).join('')}</select></td>
-    <td style="max-width:90px;"><input type="text" value="${esc(iv.currency||STATE.settings.baseCurrency)}" oninput="updateDraftRow('investments',${i},'currency',this.value.toUpperCase())"></td>
+    <td style="max-width:90px;"><input type="text" list="ledgerCurrencyList" value="${esc(iv.currency||STATE.settings.baseCurrency)}" oninput="updateDraftRow('investments',${i},'currency',this.value.toUpperCase())"></td>
     <td><input type="number" step="0.01" value="${iv.value??0}" oninput="updateDraftRow('investments',${i},'value',this.value)"></td>
     <td><button class="icon-btn" onclick="removeDraftRow('investments',${i})">✕</button></td></tr>`).join('');
   return `
@@ -1002,7 +1026,7 @@ function draftAssetHTML(){
     </div>
     <div class="field-row">
       <div class="field"><label class="field-label">Value</label><input type="number" step="0.01" value="${d.value??''}" oninput="updateDraftField('value',this.value)"></div>
-      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
     </div>
     <div class="field"><label class="field-label">Notes</label><textarea rows="2" oninput="updateDraftField('notes',this.value)">${esc(d.notes||'')}</textarea></div>
     <div class="field"><label class="field-label">Photo (optional)</label><input type="file" accept="image/*" onchange="onAssetImageChosen(this)"></div>
@@ -1118,7 +1142,7 @@ function draftRecurringHTML(p){
     </div>
     <div class="field-row">
       <div class="field"><label class="field-label">Amount</label><input type="number" step="0.01" value="${d.amount??''}" oninput="updateDraftField('amount',this.value)"></div>
-      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
       <div class="field" style="max-width:150px"><label class="field-label">Frequency</label><select onchange="updateDraftField('frequency',this.value)">${FREQUENCY_OPTIONS.map(f=>`<option value="${f}" ${d.frequency===f?'selected':''}>${f.charAt(0).toUpperCase()+f.slice(1)}</option>`).join('')}</select></div>
     </div>
     <div class="field"><label class="field-label">Notes</label><input type="text" value="${esc(d.notes||'')}" oninput="updateDraftField('notes',this.value)"></div>
@@ -1318,7 +1342,6 @@ async function deleteUserAccount(id){
 function afterRenderHooks(){
   if(STATE.view==='dashboard'){ drawNetWorthChart(); drawRecurringChart(); }
   if(STATE.view==='expenses' && STATE.currentProfile==='house') drawCategoryChart();
-  if(STATE.view==='invest' && STATE.currentProfile==='house') drawNetWorthChart();
 }
 
 /* ============================= INIT ============================= */
