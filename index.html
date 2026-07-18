@@ -172,6 +172,20 @@
     <div class="field"><label class="field-label">Username</label><input type="text" id="l-user" autocomplete="username"></div>
     <div class="field"><label class="field-label">Password</label><input type="password" id="l-pass" autocomplete="current-password"></div>
     <button class="btn login-btn" id="l-btn" onclick="doLogin()">Sign in</button>
+    <div style="text-align:center; margin-top:14px;"><span class="logout-link" onclick="toggleRecoveryPanel()">Trouble signing in?</span></div>
+
+    <div id="recovery-panel" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--rule-strong);">
+      <div style="font-size:12px; color:var(--ink-faint); margin-bottom:12px; line-height:1.5;">
+        Reset any account's password directly using the <strong>AUTH_SECRET</strong> value from your Vercel project's
+        Environment Variables. Use this only if you're locked out of every account.
+      </div>
+      <div class="login-err" id="r-err"></div>
+      <div class="login-err" id="r-ok" style="background:var(--emerald-dim); color:var(--emerald); border-color:var(--emerald);"></div>
+      <div class="field"><label class="field-label">Username to reset</label><input type="text" id="r-user" autocomplete="off"></div>
+      <div class="field"><label class="field-label">New password</label><input type="password" id="r-newpass" autocomplete="new-password"></div>
+      <div class="field"><label class="field-label">AUTH_SECRET (from Vercel)</label><input type="password" id="r-secret" autocomplete="off"></div>
+      <button class="btn ghost login-btn" id="r-btn" onclick="doRecovery()">Reset password</button>
+    </div>
   </div>
 </div>
 <div id="app"></div>
@@ -188,6 +202,7 @@ const STATE = {
   snapshots: [], // shared/consolidated cash & investment holdings, not split per profile
   assets: [],
   recurring: { a:[], b:[] },
+  govtBenefits: { a:[], b:[] },
   draft: null, // in-progress extraction review object
 };
 let authToken = localStorage.getItem('ledger_token') || '';
@@ -197,6 +212,8 @@ const CATEGORY_OPTIONS = ['Groceries','Dining','Travel','Utilities','Shopping','
 const ASSET_CATEGORIES = ['Property','Vehicle','Jewelry','Electronics','Furniture','Other'];
 const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate','Retirement Fund','Other'];
 const FREQUENCY_OPTIONS = ['weekly','monthly','yearly'];
+const GOVT_PROGRAMS = ['SSS','PhilHealth','Pag-IBIG','Pag-IBIG MP2','GSIS','Other'];
+const GOVT_ENTRY_TYPES = ['Contribution','Benefit / Claim','Loan Repayment','Other'];
 const CURRENCY_SUGGESTIONS = ['PHP','USD','INR','SGD','MYR','IDR','THB','VND','EUR','GBP','AED','AUD','JPY','HKD','KRW','CNY'];
 function currencyDatalistHTML(){
   return `<datalist id="ledgerCurrencyList">${CURRENCY_SUGGESTIONS.map(c=>`<option value="${c}">`).join('')}</datalist>`;
@@ -232,6 +249,40 @@ async function doLogin(){
   finally{ btn.disabled = false; btn.textContent = 'Sign in'; }
 }
 function showLoginErr(msg){ const el = document.getElementById('l-err'); el.textContent = msg; el.classList.add('show'); }
+function toggleRecoveryPanel(){
+  const panel = document.getElementById('recovery-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+async function doRecovery(){
+  const btn = document.getElementById('r-btn');
+  const errEl = document.getElementById('r-err'), okEl = document.getElementById('r-ok');
+  errEl.classList.remove('show'); okEl.classList.remove('show');
+  const username = document.getElementById('r-user').value.trim();
+  const newPassword = document.getElementById('r-newpass').value;
+  const recoveryKey = document.getElementById('r-secret').value;
+  if(!username || !newPassword || !recoveryKey){
+    errEl.textContent = 'Fill in all three fields.'; errEl.classList.add('show'); return;
+  }
+  btn.disabled = true; btn.textContent = 'Resetting…';
+  try{
+    const r = await fetch('/api/auth', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'recover-password', recoveryKey, username, newPassword })
+    });
+    const json = await r.json();
+    if(!r.ok){ errEl.textContent = json.error || 'Reset failed'; errEl.classList.add('show'); return; }
+    okEl.textContent = 'Password reset. You can sign in below with the new password now.';
+    okEl.classList.add('show');
+    document.getElementById('l-user').value = username;
+    document.getElementById('l-pass').value = '';
+    document.getElementById('r-newpass').value = '';
+    document.getElementById('r-secret').value = '';
+  }catch(e){
+    errEl.textContent = 'Could not reach the server. Check your connection.'; errEl.classList.add('show');
+  }finally{
+    btn.disabled = false; btn.textContent = 'Reset password';
+  }
+}
 function logout(){
   authToken = ''; currentUser = null;
   localStorage.removeItem('ledger_token');
@@ -283,6 +334,7 @@ async function loadAll(){
     STATE.snapshots = state.snapshots || [];
     STATE.assets = state.assets || [];
     STATE.recurring = { a: state.recurring_a||[], b: state.recurring_b||[] };
+    STATE.govtBenefits = { a: state.govtbenefits_a||[], b: state.govtbenefits_b||[] };
     STATE.ready = true;
   }catch(e){
     console.error('loadAll failed', e);
@@ -395,6 +447,7 @@ function sidebarHTML(){
     ['salary','Salary Slips'],
     ['expenses','Card Statements'],
     ['recurring','Recurring Expenses'],
+    ['govtbenefits','Government Benefits'],
     ['invest','Cash &amp; Investments'],
     ['assets','Assets'],
     ['settings','Settings'],
@@ -431,6 +484,7 @@ function viewHTML(){
     case 'invest': return viewInvest();
     case 'assets': return viewAssets();
     case 'recurring': return viewRecurring();
+    case 'govtbenefits': return viewGovtBenefits();
     case 'settings': return viewSettings();
     case 'users': return viewUsers();
     default: return '';
@@ -1158,6 +1212,124 @@ async function deleteRecurring(p, id){
   render();
 }
 
+/* ============================= GOVERNMENT BENEFITS VIEW ============================= */
+function govtBenefitsTotalsByProgram(profileFilter){
+  const profiles = profileFilter==='house' ? ['a','b'] : [profileFilter];
+  const totals = {};
+  profiles.forEach(p=>{
+    (STATE.govtBenefits[p]||[]).forEach(g=>{
+      const key = g.program || 'Other';
+      totals[key] = (totals[key]||0) + toBase(num(g.amount), g.currency);
+    });
+  });
+  return totals;
+}
+function viewGovtBenefits(){
+  const isHouse = STATE.currentProfile === 'house';
+  if(isHouse) return viewGovtBenefitsHousehold();
+  const p = STATE.currentProfile;
+  const list = [...(STATE.govtBenefits[p]||[])].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+  const totals = govtBenefitsTotalsByProgram(p);
+  const rows = list.map(g=>`
+    <tr>
+      <td class="txt">${fmtDate(g.date)}</td>
+      <td class="txt">${esc(g.program||'Other')}</td>
+      <td class="txt">${esc(g.entryType||'Contribution')}</td>
+      <td>${money(g.amount, g.currency)}</td>
+      <td class="txt">${esc(g.notes||'')}</td>
+      <td>${canEdit() ? `<a class="linklike" onclick="startEditGovtBenefit('${p}','${g.id}')">edit</a> · <button class="icon-btn" onclick="deleteGovtBenefit('${p}','${g.id}')">✕</button>` : ''}</td>
+    </tr>`).join('');
+  const totalPills = Object.keys(totals).length
+    ? Object.keys(totals).map(k=>`<span class="pill">${esc(k)}: ${money(totals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">—</span>';
+
+  return `
+  <h1 class="page-title">Government Benefits</h1>
+  <p class="page-sub">${esc(profileName(p))}'s SSS, PhilHealth, Pag-IBIG, and similar records — entered manually, separate from payslip deductions.</p>
+
+  <div class="ledger-card" style="margin-bottom:20px;">
+    <div class="stat-label">Totals by program</div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${totalPills}</div>
+  </div>
+
+  ${draftGovtBenefitHTML(p)}
+
+  <div class="plain-card">
+    <div class="card-title">All entries <span class="eyebrow">${list.length}</span></div>
+    ${rows ? `<table><tr><th>Date</th><th>Program</th><th>Type</th><th>Amount</th><th>Notes</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>`;
+}
+function viewGovtBenefitsHousehold(){
+  const rows = ['a','b'].flatMap(p=> (STATE.govtBenefits[p]||[]).map(g=>({...g,_p:p})))
+    .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
+    .map(g=>`<tr><td class="txt">${esc(profileName(g._p))}</td><td class="txt">${fmtDate(g.date)}</td><td class="txt">${esc(g.program||'Other')}</td><td class="txt">${esc(g.entryType||'Contribution')}</td><td>${money(g.amount,g.currency)}</td></tr>`).join('');
+  const totals = govtBenefitsTotalsByProgram('house');
+  const totalPills = Object.keys(totals).length
+    ? Object.keys(totals).map(k=>`<span class="pill">${esc(k)}: ${money(totals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">—</span>';
+  return `
+  <h1 class="page-title">Government Benefits</h1>
+  <p class="page-sub">Combined household record across both of you.</p>
+  <div class="ledger-card" style="margin-bottom:20px;">
+    <div class="stat-label">Combined totals by program</div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${totalPills}</div>
+  </div>
+  <div class="plain-card">
+    <div class="card-title">All entries</div>
+    ${rows ? `<table><tr><th>Who</th><th>Date</th><th>Program</th><th>Type</th><th>Amount</th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>`;
+}
+function draftGovtBenefitHTML(p){
+  if(!(STATE.draft && STATE.draft.kind==='govtbenefit')){
+    if(!canEdit()) return '';
+    return `<div class="plain-card"><div class="card-title">Add an entry</div><button class="btn" onclick="startAddGovtBenefit('${p}')">+ Add entry</button></div>`;
+  }
+  const d = STATE.draft.data;
+  return `
+  <div class="plain-card">
+    <div class="card-title">${d.id ? 'Edit entry' : 'New entry'}</div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Program</label><select onchange="updateDraftField('program',this.value)">${GOVT_PROGRAMS.map(g=>`<option ${d.program===g?'selected':''}>${g}</option>`).join('')}</select></div>
+      <div class="field"><label class="field-label">Entry type</label><select onchange="updateDraftField('entryType',this.value)">${GOVT_ENTRY_TYPES.map(t=>`<option ${d.entryType===t?'selected':''}>${t}</option>`).join('')}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Date</label><input type="date" value="${esc(d.date||'')}" oninput="updateDraftField('date',this.value)"></div>
+      <div class="field"><label class="field-label">Amount</label><input type="number" step="0.01" value="${d.amount??''}" oninput="updateDraftField('amount',this.value)"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+    </div>
+    <div class="field"><label class="field-label">Notes</label><input type="text" placeholder="e.g. MP2 maturity, salary loan balance, reference no." value="${esc(d.notes||'')}" oninput="updateDraftField('notes',this.value)"></div>
+    <hr class="divider">
+    <div style="display:flex; gap:10px;">
+      <button class="btn" onclick="saveDraftGovtBenefit('${p}')">Save</button>
+      <button class="btn ghost" onclick="cancelDraft()">Discard</button>
+    </div>
+  </div>`;
+}
+function startAddGovtBenefit(p){
+  STATE.draft = { kind:'govtbenefit', data:{ id:'', program:'SSS', entryType:'Contribution', date: new Date().toISOString().slice(0,10), amount:null, currency:STATE.settings.baseCurrency, notes:'' } };
+  render();
+}
+function startEditGovtBenefit(p, id){
+  const g = (STATE.govtBenefits[p]||[]).find(x=>x.id===id); if(!g) return;
+  STATE.draft = { kind:'govtbenefit', data:{ ...g } };
+  render();
+}
+async function saveDraftGovtBenefit(p){
+  const d = STATE.draft.data;
+  const entry = { id: d.id||uid(), program: d.program||'Other', entryType: d.entryType||'Contribution', date: d.date||'',
+    amount: num(d.amount), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency, notes: d.notes||'' };
+  STATE.govtBenefits[p] = STATE.govtBenefits[p].filter(g=>g.id!==entry.id);
+  STATE.govtBenefits[p].push(entry);
+  await apiSave('govtbenefits_'+p, entry);
+  STATE.draft = null;
+  render();
+}
+async function deleteGovtBenefit(p, id){
+  STATE.govtBenefits[p] = STATE.govtBenefits[p].filter(g=>g.id!==id);
+  await apiDelete('govtbenefits_'+p, id);
+  render();
+}
+
 /* ============================= SETTINGS VIEW ============================= */
 function viewSettings(){
   const rates = STATE.settings.rates;
@@ -1214,14 +1386,15 @@ function confirmResetAll(){
   resetAll();
 }
 async function resetAll(){
-  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]};
+  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]}; STATE.govtBenefits = {a:[],b:[]};
   await Promise.all([
     apiReplace('settings', [STATE.settings]),
     apiReplace('salary_a', []), apiReplace('salary_b', []),
     apiReplace('expenses_a', []), apiReplace('expenses_b', []),
     apiReplace('snapshots', []),
     apiReplace('assets', []),
-    apiReplace('recurring_a', []), apiReplace('recurring_b', [])
+    apiReplace('recurring_a', []), apiReplace('recurring_b', []),
+    apiReplace('govtbenefits_a', []), apiReplace('govtbenefits_b', [])
   ]);
   render();
 }
@@ -1289,7 +1462,7 @@ function draftUserHTML(){
         </select>
       </div>
     </div>
-    <div class="field"><label class="field-label">Password ${d.id?'<span style="text-transform:none;font-weight:400">(leave blank to keep current)</span>':''}</label><input type="text" oninput="updateDraftField('password',this.value)"></div>
+    <div class="field"><label class="field-label">Password ${d.id?'<span style="text-transform:none;font-weight:400">(leave blank to keep current)</span>':''}</label><input type="password" autocomplete="new-password" name="new-user-password-field" oninput="updateDraftField('password',this.value)"></div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
       <button class="btn" onclick="saveDraftUser()">Save user</button>
