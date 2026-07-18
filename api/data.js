@@ -1,7 +1,7 @@
 const { loadState, saveState } = require('../lib/blob');
 const { verifyToken, getBearerToken } = require('../lib/auth');
 
-const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots_a', 'snapshots_b', 'assets', 'recurring_a', 'recurring_b'];
+const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots', 'assets', 'recurring_a', 'recurring_b'];
 const ALLOWED_COLLECTIONS = ['settings', ...ARRAY_SECTIONS];
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
@@ -11,10 +11,22 @@ function defaultState() {
     settings: null, // filled in by the client's defaultSettings() on first load
     salary_a: [], salary_b: [],
     expenses_a: [], expenses_b: [],
-    snapshots_a: [], snapshots_b: [],
+    snapshots: [], // shared/consolidated cash & investment holdings - not split per profile
     assets: [],
     recurring_a: [], recurring_b: [],
   };
+}
+
+// One-time migration: earlier versions kept separate snapshots_a/snapshots_b. If a state
+// object still has those (and no consolidated 'snapshots' yet), merge them once.
+function migrateSnapshots(state) {
+  if ((!state.snapshots || !state.snapshots.length) && (state.snapshots_a || state.snapshots_b)) {
+    state.snapshots = [...(state.snapshots_a || []), ...(state.snapshots_b || [])];
+    delete state.snapshots_a;
+    delete state.snapshots_b;
+    return true;
+  }
+  return false;
 }
 
 module.exports = async (req, res) => {
@@ -33,6 +45,7 @@ module.exports = async (req, res) => {
     // This is what the app uses on load and on manual/visibility-triggered refresh.
     if (req.method === 'GET' && !col) {
       const state = await loadState(defaultState());
+      if (migrateSnapshots(state)) await saveState(state);
       res.status(200).json({ data: state });
       return;
     }
@@ -41,6 +54,7 @@ module.exports = async (req, res) => {
 
     if (req.method === 'GET') {
       const state = await loadState(defaultState());
+      if (migrateSnapshots(state)) await saveState(state);
       if (col === 'settings') { res.status(200).json({ data: state.settings ? [state.settings] : [] }); return; }
       res.status(200).json({ data: state[col] || [] });
       return;
@@ -51,6 +65,7 @@ module.exports = async (req, res) => {
       let body = req.body;
       if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = {}; } }
       const state = await loadState(defaultState());
+      migrateSnapshots(state);
 
       if (col === 'settings') {
         if (body.op === 'save') { state.settings = body.item || state.settings; }
