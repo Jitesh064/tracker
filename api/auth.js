@@ -14,7 +14,7 @@ async function ensureBootstrapAdmin(users) {
   if (users.length) return users;
   const su = process.env.SEED_ADMIN_USERNAME, sp = process.env.SEED_ADMIN_PASSWORD;
   if (!su || !sp) return users;
-  const admin = { id: uid(), username: su.trim().toLowerCase(), name: 'Admin', role: 'admin', passwordHash: hashPassword(sp) };
+  const admin = { id: uid(), username: su.trim().toLowerCase(), name: 'Admin', role: 'admin', profile: 'a', passwordHash: hashPassword(sp) };
   users.push(admin);
   await saveUsers(users);
   return users;
@@ -41,16 +41,17 @@ module.exports = async (req, res) => {
         res.status(401).json({ error: 'Invalid username or password' });
         return;
       }
-      const payload = { id: u.id, username: u.username, name: u.name, role: u.role, exp: Date.now() + TOKEN_TTL_MS };
+      const profile = u.profile || 'a'; // older accounts created before profiles existed default to 'a'
+      const payload = { id: u.id, username: u.username, name: u.name, role: u.role, profile, exp: Date.now() + TOKEN_TTL_MS };
       const token = signToken(payload);
-      res.status(200).json({ token, user: { id: u.id, username: u.username, name: u.name, role: u.role } });
+      res.status(200).json({ token, user: { id: u.id, username: u.username, name: u.name, role: u.role, profile } });
       return;
     }
 
     if (action === 'verify') {
       const payload = verifyToken(body.token);
       if (!payload) { res.status(401).json({ error: 'Invalid or expired session' }); return; }
-      res.status(200).json({ user: { id: payload.id, username: payload.username, name: payload.name, role: payload.role } });
+      res.status(200).json({ user: { id: payload.id, username: payload.username, name: payload.name, role: payload.role, profile: payload.profile || 'a' } });
       return;
     }
 
@@ -61,14 +62,15 @@ module.exports = async (req, res) => {
     if (action === 'list-users') {
       if (authed.role !== 'admin') { res.status(403).json({ error: 'Admin only' }); return; }
       const users = await getUsers();
-      res.status(200).json({ users: users.map((u) => ({ id: u.id, username: u.username, name: u.name, role: u.role })) });
+      res.status(200).json({ users: users.map((u) => ({ id: u.id, username: u.username, name: u.name, role: u.role, profile: u.profile || 'a' })) });
       return;
     }
 
     if (action === 'save-user') {
       if (authed.role !== 'admin') { res.status(403).json({ error: 'Admin only' }); return; }
-      const { userId, userUsername, userName, userRole, userPassword } = body;
+      const { userId, userUsername, userName, userRole, userPassword, userProfile } = body;
       if (!userUsername || !userName || !userRole) { res.status(400).json({ error: 'Missing fields' }); return; }
+      const profile = userProfile === 'b' ? 'b' : 'a';
       const uname = userUsername.trim().toLowerCase();
       const users = await getUsers();
       const dup = users.find((u) => u.username === uname && u.id !== userId);
@@ -76,11 +78,11 @@ module.exports = async (req, res) => {
       if (userId) {
         const existing = users.find((u) => u.id === userId);
         if (!existing) { res.status(404).json({ error: 'User not found' }); return; }
-        existing.username = uname; existing.name = userName; existing.role = userRole;
+        existing.username = uname; existing.name = userName; existing.role = userRole; existing.profile = profile;
         if (userPassword) existing.passwordHash = hashPassword(userPassword);
       } else {
         if (!userPassword) { res.status(400).json({ error: 'Password required for new users' }); return; }
-        users.push({ id: uid(), username: uname, name: userName, role: userRole, passwordHash: hashPassword(userPassword) });
+        users.push({ id: uid(), username: uname, name: userName, role: userRole, profile, passwordHash: hashPassword(userPassword) });
       }
       await saveUsers(users);
       res.status(200).json({ ok: true });
