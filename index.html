@@ -49,6 +49,9 @@
   }
   .profile-btn.active{ background:var(--emerald-dim); border-color:var(--emerald); color:var(--emerald); font-weight:600; }
   .profile-btn:hover:not(.active){ border-color:var(--ink-faint); color:var(--ink);}
+  .top-switch-row{ display:flex; justify-content:flex-end; gap:8px; margin-bottom:18px; }
+  .top-switch-btn{ padding:7px 14px; text-align:center; border-radius:20px; font-size:12.5px; }
+  @media(max-width:900px){ .top-switch-row{ justify-content:flex-start; flex-wrap:wrap; } }
   nav.navlist{ display:flex; flex-direction:column; gap:2px; }
   .navlink{
     padding:9px 10px; border-radius:6px; cursor:pointer; font-size:13.5px; color:var(--ink-dim);
@@ -438,7 +441,7 @@ async function extractDocument(base64, mimeType, kind){
 function render(){
   const app = document.getElementById('app');
   if(!STATE.ready){ app.innerHTML = '<div style="padding:60px;color:var(--ink-dim);font-family:var(--font-ui)">Loading your ledger…</div>'; return; }
-  app.innerHTML = sidebarHTML() + `<main>${viewHTML()}</main>` + currencyDatalistHTML();
+  app.innerHTML = sidebarHTML() + `<main>${topRightSwitcherHTML()}${viewHTML()}</main>` + currencyDatalistHTML();
   afterRenderHooks();
 }
 function sidebarHTML(){
@@ -453,11 +456,6 @@ function sidebarHTML(){
     ['settings','Settings'],
   ];
   if(currentUser && currentUser.role === 'admin') navItems.push(['users','Users']);
-  const myProfile = currentUser?.profile || 'a';
-  const profBtns = [myProfile, 'house'].map(p=>{
-    const label = p==='house' ? 'Household (combined)' : profileName(p);
-    return `<button class="profile-btn ${STATE.currentProfile===p?'active':''}" onclick="setProfile('${p}')">${esc(label)}</button>`;
-  }).join('');
   const navHTML = navItems.map(([key,label])=>`<div class="navlink ${STATE.view===key?'active':''}" onclick="setView('${key}')">${label}</div>`).join('');
   const roleLabel = currentUser ? (currentUser.role==='viewer' ? 'Viewer' : currentUser.role.charAt(0).toUpperCase()+currentUser.role.slice(1)) : '';
   return `
@@ -471,10 +469,17 @@ function sidebarHTML(){
       <span class="logout-link" onclick="manualRefresh()">Refresh</span>
       <span class="logout-link" onclick="logout()">Sign out</span>
     </div>
-    <div class="profile-switch">${profBtns}</div>
     <nav class="navlist">${navHTML}</nav>
     <div class="sidebar-foot">Base currency: ${esc(STATE.settings.baseCurrency)}<br>Data is shared between anyone with an account on this site.</div>
   </div>`;
+}
+function topRightSwitcherHTML(){
+  const myProfile = currentUser?.profile || 'a';
+  const btns = [myProfile, 'house'].map(p=>{
+    const label = p==='house' ? 'Household (combined)' : profileName(p);
+    return `<button class="profile-btn top-switch-btn ${STATE.currentProfile===p?'active':''}" onclick="setProfile('${p}')">${esc(label)}</button>`;
+  }).join('');
+  return `<div class="top-switch-row">${btns}</div>`;
 }
 function viewHTML(){
   switch(STATE.view){
@@ -561,6 +566,11 @@ function viewDashboard(){
       return `<tr><td class="txt">${esc(r.name)}</td><td class="txt">${esc(r.category||'Other')}</td><td class="txt">${esc(profileName(r._profile))}</td><td>${money(monthly, base)}<span style="color:var(--ink-faint)">/mo</span></td></tr>`;
     }).join('');
 
+  const govtTotals = govtBenefitsTotalsByProgram(profileKey);
+  const govtPills = Object.keys(govtTotals).length
+    ? Object.keys(govtTotals).map(k=>`<span class="pill">${esc(k)}: ${money(govtTotals[k], base)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">No entries yet</span>';
+
   return `
   <h1 class="page-title">Dashboard</h1>
   <p class="page-sub">${isHouse ? 'Combined household position' : profileName(STATE.currentProfile)+"'s position"} — figures converted to ${esc(base)} using your saved rates.</p>
@@ -597,6 +607,11 @@ function viewDashboard(){
   <div class="plain-card">
     <div class="card-title">Biggest recurring costs <span class="eyebrow">Top 5, monthly equivalent</span></div>
     ${recurringRows ? `<table><tr><th>Name</th><th>Category</th><th>Who</th><th>Monthly cost</th></tr>${recurringRows}</table>` : `<div class="empty-state">No recurring expenses added yet.</div>`}
+  </div>
+
+  <div class="plain-card">
+    <div class="card-title">Government benefits <span class="eyebrow">Totals by program</span></div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px;">${govtPills}</div>
   </div>
   `;
 }
@@ -716,6 +731,7 @@ function draftSalaryHTML(p){
     <label class="field-label">Deductions</label>
     <table><tr><th>Label</th><th>Amount</th><th></th></tr>${dedRows || '<tr><td colspan="3" style="color:var(--ink-faint);font-family:var(--font-ui)">None listed</td></tr>'}</table>
     <div class="row-table-add" onclick="addDraftRow('deductions')">+ Add deduction</div>
+    <div class="notice" style="margin-top:10px;">Deductions labeled SSS, PhilHealth, Pag-IBIG (or MP2), or GSIS are automatically logged as contributions under <strong>Government Benefits</strong> when you save.</div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
       <button class="btn" onclick="saveDraftSalary('${p}')">Save entry</button>
@@ -754,12 +770,33 @@ function addDraftRow(arrName){
 function removeDraftRow(arrName, idx){ STATE.draft.data[arrName].splice(idx,1); render(); }
 function cancelDraft(){ STATE.draft = null; render(); }
 
+// Recognizes government-program deductions on a payslip (SSS, PhilHealth, Pag-IBIG, GSIS)
+// so they can be auto-logged as contributions under Government Benefits too.
+function matchGovtProgram(label){
+  const l = (label||'').toLowerCase();
+  if(l.includes('sss')) return 'SSS';
+  if(l.includes('philhealth') || l.includes('phic')) return 'PhilHealth';
+  if(l.includes('mp2')) return 'Pag-IBIG MP2';
+  if(l.includes('pag-ibig') || l.includes('pagibig') || l.includes('hdmf')) return 'Pag-IBIG';
+  if(l.includes('gsis')) return 'GSIS';
+  return null;
+}
 async function saveDraftSalary(p){
   const d = STATE.draft.data;
   const entry = { id: uid(), pay_date: d.pay_date, employer: d.employer, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
     gross_pay: num(d.gross_pay), net_pay: num(d.net_pay), deductions: d.deductions||[], allowances: d.allowances||[] };
   STATE.salary[p].push(entry);
   await apiSave('salary_'+p, entry);
+
+  // Auto-log matching deductions as Government Benefits contributions.
+  const matched = (entry.deductions||[]).filter(ded=> matchGovtProgram(ded.label) && num(ded.amount) > 0);
+  for(const ded of matched){
+    const gEntry = { id: uid(), program: matchGovtProgram(ded.label), entryType:'Contribution', date: entry.pay_date,
+      amount: num(ded.amount), currency: entry.currency, notes: `Auto-added from ${entry.employer||'salary'} slip dated ${fmtDate(entry.pay_date)}` };
+    STATE.govtBenefits[p].push(gEntry);
+    await apiSave('govtbenefits_'+p, gEntry);
+  }
+
   STATE.draft = null;
   render();
 }
@@ -1254,6 +1291,12 @@ function viewGovtBenefits(){
 
   ${draftGovtBenefitHTML(p)}
 
+  ${canEdit() ? `<div class="plain-card">
+    <div class="card-title">Already have salary slips saved? <span class="eyebrow">Backfill</span></div>
+    <p style="font-size:12.5px; color:var(--ink-dim); margin:0 0 10px;">Slips saved before this feature existed won't have created these automatically. Run this once to pull SSS/PhilHealth/Pag-IBIG/GSIS deductions from ${esc(profileName(p))}'s existing salary history into the list below (skips anything already added).</p>
+    <button class="btn ghost" onclick="syncGovtBenefitsFromSalary('${p}')">Sync from salary history</button>
+  </div>` : ''}
+
   <div class="plain-card">
     <div class="card-title">All entries <span class="eyebrow">${list.length}</span></div>
     ${rows ? `<table><tr><th>Date</th><th>Program</th><th>Type</th><th>Amount</th><th>Notes</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
@@ -1327,6 +1370,28 @@ async function saveDraftGovtBenefit(p){
 async function deleteGovtBenefit(p, id){
   STATE.govtBenefits[p] = STATE.govtBenefits[p].filter(g=>g.id!==id);
   await apiDelete('govtbenefits_'+p, id);
+  render();
+}
+async function syncGovtBenefitsFromSalary(p){
+  const existing = STATE.govtBenefits[p]||[];
+  const alreadyLogged = (date, program, amount) => existing.some(g=>
+    g.date===date && g.program===program && Math.abs(num(g.amount)-amount) < 0.01 && (g.notes||'').startsWith('Auto-added from')
+  );
+  let added = 0;
+  for(const s of (STATE.salary[p]||[])){
+    for(const ded of (s.deductions||[])){
+      const program = matchGovtProgram(ded.label);
+      const amount = num(ded.amount);
+      if(!program || amount <= 0) continue;
+      if(alreadyLogged(s.pay_date, program, amount)) continue;
+      const gEntry = { id: uid(), program, entryType:'Contribution', date: s.pay_date, amount,
+        currency: s.currency||STATE.settings.baseCurrency, notes: `Auto-added from ${s.employer||'salary'} slip dated ${fmtDate(s.pay_date)}` };
+      STATE.govtBenefits[p].push(gEntry);
+      await apiSave('govtbenefits_'+p, gEntry);
+      added++;
+    }
+  }
+  alert(added ? `Added ${added} entr${added===1?'y':'ies'} from salary history.` : 'Nothing new to add — everything matching was already logged.');
   render();
 }
 
