@@ -55,6 +55,25 @@ module.exports = async (req, res) => {
       return;
     }
 
+    // Break-glass recovery: resets one account's password using AUTH_SECRET itself rather than
+    // a login session. Use only when every admin account is locked out (e.g. password lost to a
+    // bug or mistake) - the recovery key is the same value you already set in Vercel's env vars.
+    if (action === 'recover-password') {
+      if (!body.recoveryKey || body.recoveryKey !== process.env.AUTH_SECRET) {
+        res.status(401).json({ error: 'Invalid recovery key' });
+        return;
+      }
+      const uname = (body.username || '').trim().toLowerCase();
+      if (!uname || !body.newPassword) { res.status(400).json({ error: 'Missing username or newPassword' }); return; }
+      const users = await getUsers();
+      const u = users.find((x) => x.username === uname);
+      if (!u) { res.status(404).json({ error: 'No user with that username' }); return; }
+      u.passwordHash = hashPassword(body.newPassword);
+      await saveUsers(users);
+      res.status(200).json({ ok: true });
+      return;
+    }
+
     // Everything below requires a valid session.
     const authed = verifyToken(getBearerToken(req));
     if (!authed) { res.status(401).json({ error: 'Not authenticated' }); return; }
