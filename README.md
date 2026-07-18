@@ -20,7 +20,7 @@ Same pattern as the SII Logistics Schedule tool:
   a signed, stateless token (HMAC-SHA256, no external JWT library) stored in `localStorage`
   and sent as a Bearer token on every request. Passwords are hashed with `scrypt` (Node's
   built-in `crypto`) — never stored in plain text.
-- **`/api/extract`**: holds your Anthropic API key server-side and reads payslip/SOA images
+- **`/api/extract`**: holds your Gemini API key server-side and reads payslip/SOA images
   or PDFs into structured JSON. Requires a valid session; viewers can't trigger it.
 
 ## Roles
@@ -75,7 +75,7 @@ Project → **Settings** → **Environment Variables**:
 
 | Variable | Value |
 |---|---|
-| `ANTHROPIC_API_KEY` | Your key from [console.anthropic.com](https://console.anthropic.com) (Settings → API Keys). Billed separately from any Claude.ai subscription — pay-as-you-go. |
+| `GEMINI_API_KEY` | Free key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — no credit card, no cost. Sign in with a Google account and click "Create API key." |
 | `AUTH_SECRET` | Any long random string (e.g. run `openssl rand -hex 32` locally). Used to sign login sessions — keep it secret, don't reuse it elsewhere. |
 | `SEED_ADMIN_USERNAME` | The username for your first admin account, e.g. `jitesh`. |
 | `SEED_ADMIN_PASSWORD` | A real password for that first admin account. |
@@ -84,7 +84,10 @@ Project → **Settings** → **Environment Variables**:
 - Redeploy so the env vars take effect.
 - Sign in with `SEED_ADMIN_USERNAME` / `SEED_ADMIN_PASSWORD`.
 - Go to **Users** → **+ Add user** and create your partner's account (Editor role is usually
-  right for both of you). You can remove `SEED_ADMIN_USERNAME`/`SEED_ADMIN_PASSWORD` from the
+  right for both of you). Assign them the other **data profile** in that form — each login
+  is tied to one of the two profiles (whoever's salary/expenses/assets it owns), so make sure
+  your account and your partner's are on different profiles. You can rename the profiles
+  themselves (from "Profile A"/"Profile B" to actual names) in Settings. You can remove `SEED_ADMIN_USERNAME`/`SEED_ADMIN_PASSWORD` from the
   env vars after this if you'd rather not leave a password sitting in Vercel's settings —
   it's only read when no users exist yet, so it won't be needed again.
 
@@ -96,5 +99,7 @@ Project → **Settings** → **Environment Variables**:
   through a review-and-edit step before it saves, specifically so you can correct anything it
   misreads.
 - **Costs**: Vercel Blob and Vercel Functions have free tiers that comfortably cover a
-  two-person household tool. The only real ongoing cost is Anthropic API usage per extraction
-  (typically a fraction of a cent per document).
+  two-person household tool. Extraction runs on Gemini's free tier, so there's no per-document
+  cost — just be aware free-tier usage means Google may use those requests to improve their
+  models (see their terms). If you'd rather avoid that, a paid Gemini or other provider key
+  would need a small code change in `api/extract.js`.
