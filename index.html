@@ -185,7 +185,7 @@ const STATE = {
   settings: null,
   salary: { a:[], b:[] },
   expenses: { a:[], b:[] },
-  snapshots: { a:[], b:[] },
+  snapshots: [], // shared/consolidated cash & investment holdings, not split per profile
   assets: [],
   recurring: { a:[], b:[] },
   draft: null, // in-progress extraction review object
@@ -241,13 +241,14 @@ function logout(){
 }
 async function bootApp(){
   document.getElementById('login-screen').classList.add('hidden');
+  STATE.currentProfile = currentUser?.profile || 'a';
   await loadAll();
   render();
   startPolling();
 }
 
 /* ============================= DATA LAYER (per-collection writes against one consolidated blob) ============================= */
-// Collections: settings (single row), salary_a/b, expenses_a/b, snapshots_a/b, assets
+// Collections: settings (single row), salary_a/b, expenses_a/b, snapshots (shared), assets, recurring_a/b
 async function apiSave(col, item){
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'save', item }) });
@@ -279,7 +280,7 @@ async function loadAll(){
     STATE.settings = state.settings || defaultSettings();
     STATE.salary = { a: state.salary_a||[], b: state.salary_b||[] };
     STATE.expenses = { a: state.expenses_a||[], b: state.expenses_b||[] };
-    STATE.snapshots = { a: state.snapshots_a||[], b: state.snapshots_b||[] };
+    STATE.snapshots = state.snapshots || [];
     STATE.assets = state.assets || [];
     STATE.recurring = { a: state.recurring_a||[], b: state.recurring_b||[] };
     STATE.ready = true;
@@ -399,7 +400,8 @@ function sidebarHTML(){
     ['settings','Settings'],
   ];
   if(currentUser && currentUser.role === 'admin') navItems.push(['users','Users']);
-  const profBtns = ['a','b','house'].map(p=>{
+  const myProfile = currentUser?.profile || 'a';
+  const profBtns = [myProfile, 'house'].map(p=>{
     const label = p==='house' ? 'Household (combined)' : profileName(p);
     return `<button class="profile-btn ${STATE.currentProfile===p?'active':''}" onclick="setProfile('${p}')">${esc(label)}</button>`;
   }).join('');
@@ -438,7 +440,7 @@ function setView(v){ STATE.view = v; STATE.draft = null; render(); }
 function setProfile(p){ STATE.currentProfile = p; STATE.draft = null; render(); }
 
 /* ============================= DASHBOARD ============================= */
-function latestSnapshot(p){ const arr = STATE.snapshots[p]||[]; if(!arr.length) return null; return [...arr].sort((x,y)=> x.date < y.date ? 1 : -1)[0]; }
+function latestSnapshot(){ const arr = STATE.snapshots||[]; if(!arr.length) return null; return [...arr].sort((x,y)=> x.date < y.date ? 1 : -1)[0]; }
 function snapshotTotalBase(s){
   if(!s) return 0;
   let t = 0;
@@ -480,9 +482,9 @@ function viewDashboard(){
   const isHouse = STATE.currentProfile === 'house';
   const profileKey = isHouse ? 'house' : STATE.currentProfile;
   const profiles = isHouse ? ['a','b'] : [STATE.currentProfile];
-  let netWorth = 0, cashInvest = 0, assetsVal = 0, expenseThisMonth = 0;
+  let netWorth = 0, assetsVal = 0, expenseThisMonth = 0;
+  const cashInvest = snapshotTotalBase(latestSnapshot()); // shared/consolidated - computed once, not per profile
   profiles.forEach(p=>{
-    cashInvest += snapshotTotalBase(latestSnapshot(p));
     expenseThisMonth += monthExpenseTotalBase(p);
   });
   assetsVal = assetsTotalBase(profileKey);
@@ -558,20 +560,10 @@ function recurringCategoryTotals(profileKey){
 function drawNetWorthChart(){
   const canvas = document.getElementById('netWorthChart');
   if(!canvas || typeof Chart==='undefined') return;
-  const isHouse = STATE.currentProfile === 'house';
-  const profiles = isHouse ? ['a','b'] : [STATE.currentProfile];
-  const dateSet = new Set();
-  profiles.forEach(p=> (STATE.snapshots[p]||[]).forEach(s=> dateSet.add(s.date)));
-  const dates = [...dateSet].sort();
-  if(!dates.length){ canvas.style.display='none'; return; }
-  const series = dates.map(d=>{
-    let t = 0;
-    profiles.forEach(p=>{
-      const snap = (STATE.snapshots[p]||[]).find(s=>s.date===d);
-      if(snap) t += snapshotTotalBase(snap);
-    });
-    return t;
-  });
+  const list = [...(STATE.snapshots||[])].sort((a,b)=> a.date.localeCompare(b.date));
+  if(!list.length){ canvas.style.display='none'; return; }
+  const dates = list.map(s=>s.date);
+  const series = list.map(s=> snapshotTotalBase(s));
   new Chart(canvas.getContext('2d'), {
     type:'line',
     data:{ labels: dates.map(fmtDate), datasets:[{ label:'Cash + Investments', data: series, borderColor:'#4FD1AE', backgroundColor:'rgba(79,209,174,0.12)', tension:0.25, fill:true, pointRadius:3 }] },
@@ -875,56 +867,37 @@ async function deleteExpense(p, id){
   render();
 }
 
-/* ============================= INVESTMENTS & CASH VIEW ============================= */
+/* ============================= INVESTMENTS & CASH VIEW (shared/consolidated - not split per profile) ============================= */
 function viewInvest(){
-  const isHouse = STATE.currentProfile === 'house';
-  if(isHouse) return viewInvestHousehold();
-  const p = STATE.currentProfile;
-  const list = [...(STATE.snapshots[p]||[])].sort((a,b)=> b.date.localeCompare(a.date));
-  const latest = latestSnapshot(p);
+  const list = [...(STATE.snapshots||[])].sort((a,b)=> b.date.localeCompare(a.date));
+  const latest = latestSnapshot();
   const latestTotals = snapshotCurrencyTotals(latest);
   const rows = list.map(s=>{
-    return `<tr><td class="txt">${fmtDate(s.date)}</td><td>${currencyPillsHTML(snapshotCurrencyTotals(s))}</td><td>${canEdit() ? `<button class="icon-btn" onclick="deleteSnapshot('${p}','${s.id}')">✕</button>` : ''}</td></tr>`;
+    return `<tr><td class="txt">${fmtDate(s.date)}</td><td>${currencyPillsHTML(snapshotCurrencyTotals(s))}</td><td>${canEdit() ? `<button class="icon-btn" onclick="deleteSnapshot('${s.id}')">✕</button>` : ''}</td></tr>`;
   }).join('');
 
   return `
   <h1 class="page-title">Cash &amp; Investments</h1>
-  <p class="page-sub">Record ${esc(profileName(p))}'s position as of a given date, in whatever currencies apply.</p>
+  <p class="page-sub">One shared household record, as of a given date, in whatever currencies apply.</p>
 
   <div class="plain-card">
     <div class="card-title">Currency breakdown <span class="eyebrow">${latest ? 'As of '+fmtDate(latest.date) : 'No snapshot yet'}</span></div>
     <div style="display:flex; flex-wrap:wrap; gap:10px;">${currencyPillsHTML(latestTotals)}</div>
   </div>
 
-  ${draftSnapshotHTML(p)}
+  ${draftSnapshotHTML()}
 
   <div class="plain-card">
     <div class="card-title">Snapshots over time <span class="eyebrow">${list.length} recorded</span></div>
     ${rows ? `<table><tr><th>As of</th><th>By currency</th><th></th></tr>${rows}</table>` : `<div class="empty-state">No snapshots yet — add one above.</div>`}
   </div>`;
 }
-function viewInvestHousehold(){
-  const latestA = latestSnapshot('a'), latestB = latestSnapshot('b');
-  const totalsA = snapshotCurrencyTotals(latestA), totalsB = snapshotCurrencyTotals(latestB);
-  const combinedTotals = mergeCurrencyTotals(totalsA, totalsB);
-  return `
-  <h1 class="page-title">Cash &amp; Investments</h1>
-  <p class="page-sub">Combined household position, using each person's most recent snapshot.</p>
-  <div class="plain-card">
-    <div class="card-title">Currency breakdown <span class="eyebrow">Combined, latest snapshots</span></div>
-    <div style="display:flex; flex-wrap:wrap; gap:10px;">${currencyPillsHTML(combinedTotals)}</div>
-  </div>
-  <div class="grid-2">
-    <div class="ledger-card"><div class="stat-label">${esc(profileName('a'))} — as of ${latestA?fmtDate(latestA.date):'—'}</div><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">${currencyPillsHTML(totalsA)}</div></div>
-    <div class="ledger-card"><div class="stat-label">${esc(profileName('b'))} — as of ${latestB?fmtDate(latestB.date):'—'}</div><div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">${currencyPillsHTML(totalsB)}</div></div>
-  </div>`;
-}
-function draftSnapshotHTML(p){
+function draftSnapshotHTML(){
   if(!(STATE.draft && STATE.draft.kind==='snapshot')){
     if(!canEdit()) return '';
     return `<div class="plain-card">
       <div class="card-title">Add a snapshot</div>
-      <button class="btn" onclick="startSnapshot('${p}')">Record cash &amp; investments as of a date</button>
+      <button class="btn" onclick="startSnapshot()">Record cash &amp; investments as of a date</button>
     </div>`;
   }
   const d = STATE.draft.data;
@@ -952,12 +925,12 @@ function draftSnapshotHTML(p){
     <div class="row-table-add" onclick="addSnapshotRow('investments')">+ Add investment</div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
-      <button class="btn" onclick="saveDraftSnapshot('${p}')">Save snapshot</button>
+      <button class="btn" onclick="saveDraftSnapshot()">Save snapshot</button>
       <button class="btn ghost" onclick="cancelDraft()">Discard</button>
     </div>
   </div>`;
 }
-function startSnapshot(p){
+function startSnapshot(){
   STATE.draft = { kind:'snapshot', data:{ date: new Date().toISOString().slice(0,10), cash:[], investments:[] } };
   render();
 }
@@ -966,20 +939,20 @@ function addSnapshotRow(which){
   if(which==='investments') STATE.draft.data.investments.push({name:'', type:'Stocks', currency:STATE.settings.baseCurrency, value:0});
   render();
 }
-async function saveDraftSnapshot(p){
+async function saveDraftSnapshot(){
   const d = STATE.draft.data;
   const entry = { id: uid(), date: d.date, cash: d.cash||[], investments: d.investments||[] };
-  const existing = STATE.snapshots[p].find(s=>s.date===entry.date);
-  if(existing) await apiDelete('snapshots_'+p, existing.id);
-  STATE.snapshots[p] = STATE.snapshots[p].filter(s=>s.date!==entry.date);
-  STATE.snapshots[p].push(entry);
-  await apiSave('snapshots_'+p, entry);
+  const existing = STATE.snapshots.find(s=>s.date===entry.date);
+  if(existing) await apiDelete('snapshots', existing.id);
+  STATE.snapshots = STATE.snapshots.filter(s=>s.date!==entry.date);
+  STATE.snapshots.push(entry);
+  await apiSave('snapshots', entry);
   STATE.draft = null;
   render();
 }
-async function deleteSnapshot(p, id){
-  STATE.snapshots[p] = STATE.snapshots[p].filter(s=>s.id!==id);
-  await apiDelete('snapshots_'+p, id);
+async function deleteSnapshot(id){
+  STATE.snapshots = STATE.snapshots.filter(s=>s.id!==id);
+  await apiDelete('snapshots', id);
   render();
 }
 
@@ -1241,12 +1214,12 @@ function confirmResetAll(){
   resetAll();
 }
 async function resetAll(){
-  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = {a:[],b:[]}; STATE.assets = []; STATE.recurring = {a:[],b:[]};
+  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]};
   await Promise.all([
     apiReplace('settings', [STATE.settings]),
     apiReplace('salary_a', []), apiReplace('salary_b', []),
     apiReplace('expenses_a', []), apiReplace('expenses_b', []),
-    apiReplace('snapshots_a', []), apiReplace('snapshots_b', []),
+    apiReplace('snapshots', []),
     apiReplace('assets', []),
     apiReplace('recurring_a', []), apiReplace('recurring_b', [])
   ]);
@@ -1268,16 +1241,17 @@ function viewUsers(){
       <td class="txt">${esc(u.username)}</td>
       <td class="txt">${esc(u.name)}</td>
       <td class="txt">${esc(u.role)}</td>
-      <td><a class="linklike" onclick="startEditUser('${u.id}','${esc(u.username)}','${esc(u.name)}','${u.role}')">edit</a>
+      <td class="txt">${esc(profileName(u.profile||'a'))}</td>
+      <td><a class="linklike" onclick="startEditUser('${u.id}','${esc(u.username)}','${esc(u.name)}','${u.role}','${u.profile||'a'}')">edit</a>
         ${u.id!==currentUser.id ? ` · <a class="linklike" style="color:var(--red)" onclick="deleteUserAccount('${u.id}')">remove</a>` : ''}</td>
     </tr>`).join('');
   return `
   <h1 class="page-title">Users</h1>
-  <p class="page-sub">Accounts that can sign in to this ledger. Viewers can look but not edit.</p>
+  <p class="page-sub">Accounts that can sign in to this ledger. Each account maps to one of the two data profiles below; viewers can look but not edit.</p>
   ${draftUserHTML()}
   <div class="plain-card">
     <div class="card-title">All accounts <span class="eyebrow">${usersListCache.length}</span></div>
-    <table><tr><th>Username</th><th>Name</th><th>Role</th><th></th></tr>${rows || '<tr><td colspan="4" style="color:var(--ink-faint);font-family:var(--font-ui)">None yet</td></tr>'}</table>
+    <table><tr><th>Username</th><th>Name</th><th>Role</th><th>Data profile</th><th></th></tr>${rows || '<tr><td colspan="5" style="color:var(--ink-faint);font-family:var(--font-ui)">None yet</td></tr>'}</table>
   </div>`;
 }
 async function loadUsersList(){
@@ -1308,8 +1282,14 @@ function draftUserHTML(){
           <option value="viewer" ${d.role==='viewer'?'selected':''}>Viewer — read-only</option>
         </select>
       </div>
-      <div class="field"><label class="field-label">Password ${d.id?'<span style="text-transform:none;font-weight:400">(leave blank to keep current)</span>':''}</label><input type="text" oninput="updateDraftField('password',this.value)"></div>
+      <div class="field"><label class="field-label">Data profile <span style="text-transform:none;font-weight:400">(which salary/expenses/assets this login owns)</span></label>
+        <select onchange="updateDraftField('profile',this.value)">
+          <option value="a" ${d.profile!=='b'?'selected':''}>${esc(profileName('a'))}</option>
+          <option value="b" ${d.profile==='b'?'selected':''}>${esc(profileName('b'))}</option>
+        </select>
+      </div>
     </div>
+    <div class="field"><label class="field-label">Password ${d.id?'<span style="text-transform:none;font-weight:400">(leave blank to keep current)</span>':''}</label><input type="text" oninput="updateDraftField('password',this.value)"></div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
       <button class="btn" onclick="saveDraftUser()">Save user</button>
@@ -1317,14 +1297,14 @@ function draftUserHTML(){
     </div>
   </div>`;
 }
-function startAddUser(){ STATE.draft = { kind:'user', data:{ id:'', username:'', name:'', role:'editor', password:'' } }; render(); }
-function startEditUser(id, username, name, role){ STATE.draft = { kind:'user', data:{ id, username, name, role, password:'' } }; render(); }
+function startAddUser(){ STATE.draft = { kind:'user', data:{ id:'', username:'', name:'', role:'editor', profile:'a', password:'' } }; render(); }
+function startEditUser(id, username, name, role, profile){ STATE.draft = { kind:'user', data:{ id, username, name, role, profile: profile||'a', password:'' } }; render(); }
 async function saveDraftUser(){
   const d = STATE.draft.data;
   if(!d.username || !d.name){ alert('Username and full name are required'); return; }
   if(!d.id && !d.password){ alert('Password is required for new users'); return; }
   const r = await fetch('/api/auth', { method:'POST', headers: authHdr(), body: JSON.stringify({
-    action:'save-user', userId: d.id||undefined, userUsername: d.username, userName: d.name, userRole: d.role, userPassword: d.password||undefined
+    action:'save-user', userId: d.id||undefined, userUsername: d.username, userName: d.name, userRole: d.role, userProfile: d.profile||'a', userPassword: d.password||undefined
   }) });
   const json = await r.json();
   if(!r.ok){ alert(json.error||'Save failed'); return; }
