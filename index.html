@@ -217,6 +217,7 @@ const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate',
 const FREQUENCY_OPTIONS = ['weekly','monthly','yearly'];
 const GOVT_PROGRAMS = ['SSS','PhilHealth','Pag-IBIG','Pag-IBIG MP2','GSIS','Other'];
 const GOVT_ENTRY_TYPES = ['Contribution','Benefit / Claim','Loan Repayment','Other'];
+const PAY_PERIOD_OPTIONS = ['Monthly','1st Half (1–15)','2nd Half (16–31)'];
 const CURRENCY_SUGGESTIONS = ['PHP','USD','INR','SGD','MYR','IDR','THB','VND','EUR','GBP','AED','AUD','JPY','HKD','KRW','CNY'];
 function currencyDatalistHTML(){
   return `<datalist id="ledgerCurrencyList">${CURRENCY_SUGGESTIONS.map(c=>`<option value="${c}">`).join('')}</datalist>`;
@@ -661,6 +662,7 @@ function viewSalary(){
   const rows = list.map(s=>`
     <tr>
       <td class="txt">${fmtDate(s.pay_date)}</td>
+      <td class="txt">${esc(s.pay_period||'Monthly')}</td>
       <td class="txt">${esc(s.employer||'—')}</td>
       <td>${money(s.gross_pay, s.currency)}</td>
       <td>${money(s.net_pay, s.currency)}</td>
@@ -676,19 +678,19 @@ function viewSalary(){
 
   <div class="plain-card">
     <div class="card-title">History <span class="eyebrow">${list.length} entr${list.length===1?'y':'ies'}</span></div>
-    ${rows ? `<table><tr><th>Pay date</th><th>Employer</th><th>Gross</th><th>Net</th><th>Ccy</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet — upload a slip above.</div>`}
+    ${rows ? `<table><tr><th>Pay date</th><th>Period</th><th>Employer</th><th>Gross</th><th>Net</th><th>Ccy</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet — upload a slip above.</div>`}
   </div>`;
 }
 function viewSalaryHousehold(){
   const rows = ['a','b'].flatMap(p=> (STATE.salary[p]||[]).map(s=>({...s,_p:p})))
     .sort((a,b)=>(b.pay_date||'').localeCompare(a.pay_date||''))
-    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.pay_date)}</td><td class="txt">${esc(s.employer||'—')}</td><td>${money(s.gross_pay,s.currency)}</td><td>${money(s.net_pay,s.currency)}</td></tr>`).join('');
+    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.pay_date)}</td><td class="txt">${esc(s.pay_period||'Monthly')}</td><td class="txt">${esc(s.employer||'—')}</td><td>${money(s.gross_pay,s.currency)}</td><td>${money(s.net_pay,s.currency)}</td></tr>`).join('');
   return `
   <h1 class="page-title">Salary Slips</h1>
   <p class="page-sub">Combined view — switch to an individual profile to add a new entry.</p>
   <div class="plain-card">
     <div class="card-title">Combined history</div>
-    ${rows ? `<table><tr><th>Who</th><th>Pay date</th><th>Employer</th><th>Gross</th><th>Net</th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
+    ${rows ? `<table><tr><th>Who</th><th>Pay date</th><th>Period</th><th>Employer</th><th>Gross</th><th>Net</th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
   </div>`;
 }
 
@@ -727,6 +729,7 @@ function draftSalaryHTML(p){
     <div class="field-row">
       <div class="field"><label class="field-label">Gross pay</label><input type="number" step="0.01" value="${d.gross_pay??''}" oninput="updateDraftField('gross_pay',this.value)"></div>
       <div class="field"><label class="field-label">Net pay</label><input type="number" step="0.01" value="${d.net_pay??''}" oninput="updateDraftField('net_pay',this.value)"></div>
+      <div class="field" style="max-width:170px"><label class="field-label">Pay period</label><select onchange="updateDraftField('pay_period',this.value)">${PAY_PERIOD_OPTIONS.map(o=>`<option ${d.pay_period===o?'selected':''}>${o}</option>`).join('')}</select></div>
     </div>
     <label class="field-label">Deductions</label>
     <table><tr><th>Label</th><th>Amount</th><th></th></tr>${dedRows || '<tr><td colspan="3" style="color:var(--ink-faint);font-family:var(--font-ui)">None listed</td></tr>'}</table>
@@ -748,7 +751,7 @@ async function onSalaryFileChosen(input){
     const json = await extractDocument(base64, file.type || 'application/pdf', 'salary');
     STATE.draft = { kind:'salary', data:{
       pay_date: json.pay_date || '', employer: json.employer || '', currency: (json.currency||STATE.settings.baseCurrency).toUpperCase(),
-      gross_pay: json.gross_pay ?? null, net_pay: json.net_pay ?? null,
+      gross_pay: json.gross_pay ?? null, net_pay: json.net_pay ?? null, pay_period: normalizePayPeriod(json.pay_period, json.pay_date),
       deductions: Array.isArray(json.deductions) ? json.deductions : [], allowances: Array.isArray(json.allowances) ? json.allowances : []
     }};
     render();
@@ -756,8 +759,21 @@ async function onSalaryFileChosen(input){
     status.innerHTML = `<div class="notice" style="margin-top:10px;color:var(--red)">Couldn't extract that file automatically (${esc(e.message||'unknown error')}). You can enter it manually instead.</div>`;
   }
 }
+// Maps the AI's free-text guess (or the pay date itself) onto our fixed dropdown options.
+function normalizePayPeriod(raw, payDate){
+  const r = (raw||'').toLowerCase();
+  if(r.includes('1st') || r.includes('first') || r.includes('1-15') || r.includes('01-15')) return PAY_PERIOD_OPTIONS[1];
+  if(r.includes('2nd') || r.includes('second') || r.includes('16-') || r.includes('16–')) return PAY_PERIOD_OPTIONS[2];
+  if(r.includes('month')) return PAY_PERIOD_OPTIONS[0];
+  // No usable hint from the document - guess from the day-of-month on the pay date, still editable either way.
+  if(payDate){
+    const day = parseInt(String(payDate).split('-')[2], 10);
+    if(!isNaN(day)) return day <= 15 ? PAY_PERIOD_OPTIONS[1] : PAY_PERIOD_OPTIONS[2];
+  }
+  return PAY_PERIOD_OPTIONS[0];
+}
 function startManualSalary(p){
-  STATE.draft = { kind:'salary', data:{ pay_date:'', employer:'', currency:STATE.settings.baseCurrency, gross_pay:null, net_pay:null, deductions:[], allowances:[] } };
+  STATE.draft = { kind:'salary', data:{ pay_date:'', employer:'', currency:STATE.settings.baseCurrency, gross_pay:null, net_pay:null, pay_period:PAY_PERIOD_OPTIONS[0], deductions:[], allowances:[] } };
   render();
 }
 function updateDraftField(field, value){ STATE.draft.data[field] = value; }
@@ -784,7 +800,7 @@ function matchGovtProgram(label){
 async function saveDraftSalary(p){
   const d = STATE.draft.data;
   const entry = { id: uid(), pay_date: d.pay_date, employer: d.employer, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
-    gross_pay: num(d.gross_pay), net_pay: num(d.net_pay), deductions: d.deductions||[], allowances: d.allowances||[] };
+    gross_pay: num(d.gross_pay), net_pay: num(d.net_pay), pay_period: d.pay_period||PAY_PERIOD_OPTIONS[0], deductions: d.deductions||[], allowances: d.allowances||[] };
   STATE.salary[p].push(entry);
   await apiSave('salary_'+p, entry);
 
