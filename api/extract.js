@@ -2,7 +2,7 @@ const { verifyToken, getBearerToken } = require('../lib/auth');
 
 const SALARY_PROMPT = `You are extracting structured data from a payslip/salary slip image or PDF.
 Return ONLY valid JSON (no markdown fences, no commentary) matching exactly this schema:
-{"pay_date":"YYYY-MM-DD or null","employer":"string or null","currency":"3-letter currency code guess e.g. PHP, USD","gross_pay":number or null,"net_pay":number or null,"deductions":[{"label":"string","amount":number}],"allowances":[{"label":"string","amount":number}]}
+{"pay_date":"YYYY-MM-DD or null","employer":"string or null","currency":"3-letter currency code guess e.g. PHP, USD","gross_pay":number or null,"net_pay":number or null,"pay_period":"one of Monthly, 1st Half, 2nd Half - based on the payslip's stated cutoff/period dates (e.g. 1-15 is 1st Half, 16-31 is 2nd Half); use Monthly if it covers a full month or isn't stated","deductions":[{"label":"string","amount":number}],"allowances":[{"label":"string","amount":number}]}
 Use null for missing string/number fields and empty arrays if none found. Output nothing but the JSON object.`;
 
 const SOA_PROMPT = `You are extracting structured data from a credit card statement of account (SOA) image or PDF.
