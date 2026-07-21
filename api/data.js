@@ -3,34 +3,42 @@ const { verifyToken, getBearerToken } = require('../lib/auth');
 
 const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots', 'assets', 'recurring_a', 'recurring_b', 'govtbenefits_a', 'govtbenefits_b'];
 const ALLOWED_COLLECTIONS = ['settings', ...ARRAY_SECTIONS];
+const MIGRATION_MARKER = 'migration-v3-percollection.json';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 function pathFor(col) { return `data-${col}.json`; }
 
-// Each collection now lives in its OWN blob file, so saving one person's salary entry never
-// touches (and can never race against) another collection's file. Older versions of this app
-// kept everything in one combined 'ledger-state.json' file; if a collection's own file doesn't
-// exist yet, we fall back to reading it out of that old combined file once, then split it out.
-let legacyStateCache = null;
-async function legacyState() {
-  if (legacyStateCache === null) legacyStateCache = await loadState(null);
-  return legacyStateCache;
+// This app has used a few different storage layouts over time: per-collection files, then one
+// combined 'ledger-state.json' file, now per-collection files again. Because the current layout
+// reuses the same file names as the very first one, we can't just check "does this file already
+// exist" to decide whether a collection has been migrated - a leftover file from that much
+// earlier version would look like it's "already there" and shadow the real, current data that's
+// actually sitting in the combined file. Instead this runs a forced one-time migration, guarded
+// by an explicit marker, that overwrites every per-collection file from the combined state.
+let migrationDone = null;
+async function ensureMigrated() {
+  if (migrationDone) return;
+  const marker = await loadJSON(MIGRATION_MARKER, null);
+  if (marker) { migrationDone = true; return; }
+  const legacy = await loadState(null);
+  if (legacy) {
+    await Promise.all(ALLOWED_COLLECTIONS.map(async (col) => {
+      let val = legacy[col];
+      if (col === 'snapshots' && val === undefined && (legacy.snapshots_a || legacy.snapshots_b)) {
+        val = [...(legacy.snapshots_a || []), ...(legacy.snapshots_b || [])];
+      }
+      if (val === undefined) val = col === 'settings' ? null : [];
+      await saveJSON(pathFor(col), val);
+    }));
+  }
+  await saveJSON(MIGRATION_MARKER, { migratedAt: Date.now() });
+  migrationDone = true;
 }
 async function loadCollection(col) {
+  await ensureMigrated();
   const isSettings = col === 'settings';
   const existing = await loadJSON(pathFor(col), undefined);
   if (existing !== undefined) return existing;
-  const legacy = await legacyState();
-  if (legacy && legacy[col] !== undefined) {
-    await saveJSON(pathFor(col), legacy[col]);
-    return legacy[col];
-  }
-  // Very old versions split cash & investments per profile before it became one shared list.
-  if (col === 'snapshots' && legacy && (legacy.snapshots_a || legacy.snapshots_b)) {
-    const merged = [...(legacy.snapshots_a || []), ...(legacy.snapshots_b || [])];
-    await saveJSON(pathFor(col), merged);
-    return merged;
-  }
   return isSettings ? null : [];
 }
 async function saveCollection(col, data) { await saveJSON(pathFor(col), data); }
