@@ -1447,7 +1447,11 @@ function viewSettings(){
   <div class="plain-card">
     <div class="card-title">Data &amp; privacy</div>
     <div class="notice">Everything saved here — salary, statements, snapshots, assets — lives in one shared database. Anyone with a login on this site can see it. Updates sync automatically when you switch back to this tab, or anytime via the <strong>Refresh</strong> link in the sidebar. Manage who has access under <strong>Users</strong> (admin only).</div>
-    ${currentUser?.role==='admin' ? `<div style="margin-top:14px;"><button class="btn danger" onclick="confirmResetAll()">Clear all data</button></div>` : ''}
+    ${currentUser?.role==='admin' ? `<div style="margin-top:14px; display:flex; gap:10px;">
+      <button class="btn danger" onclick="confirmResetAll()">Clear all data</button>
+      <button class="btn ghost" onclick="runLegacyMigrationNow()">Repair from legacy backup</button>
+    </div>
+    <div class="notice" style="margin-top:10px;">"Repair from legacy backup" only matters if this app has been running a long time across storage changes — it pulls each data type fresh from an old combined backup file. It does not run automatically and shouldn't be needed in normal use; only run it if data seems to have gone missing and support has asked you to.</div>` : ''}
   </div>`;
 }
 async function updateProfileName(p, val){ STATE.settings.profileNames[p] = val; await saveSettings(); }
@@ -1478,6 +1482,17 @@ async function resetAll(){
     apiReplace('govtbenefits_a', []), apiReplace('govtbenefits_b', [])
   ]);
   render();
+}
+async function runLegacyMigrationNow(){
+  if(!confirm('This pulls each data type fresh from the old combined backup file. Only run this if data has actually gone missing. Continue?')) return;
+  try{
+    const r = await fetch('/api/data?action=run-legacy-migration', { method:'POST', headers: authHdr() });
+    const json = await r.json();
+    if(!r.ok){ alert(json.error||'Failed'); return; }
+    alert(json.ranMigration ? 'Done — pulled fresh data from the backup file.' : 'No legacy backup file was found — nothing to restore.');
+    await loadAll();
+    render();
+  }catch(e){ alert('Could not reach the server: '+e.message); }
 }
 
 /* ============================= USERS (admin only) ============================= */
