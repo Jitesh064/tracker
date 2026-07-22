@@ -9,13 +9,18 @@ keep a reference list of assets. Shared between two profiles, protected by real 
 Same pattern as the SII Logistics Schedule tool:
 
 - **Frontend**: a single static `index.html` (no build step, no framework).
-- **`/api/data`**: a single consolidated JSON file in **Vercel Blob** (`ledger-state.json`)
-  holds everything — settings and every profile's salary/expenses/snapshots/assets. Every
-  read or write is exactly **one** Blob operation, regardless of which section changed.
+- **`/api/data`**: each data type (settings, each person's salary/expenses/recurring/govt
+  benefits, the shared cash & investments list, assets) lives in its **own** file in
+  **Vercel Blob**. Saving one thing only ever reads and rewrites that one file - it can never
+  overwrite unrelated data, even if two saves (e.g. both of you uploading slips around the same
+  time) happen close together. An earlier version of this stored everything in one combined
+  file to save on Blob operations; that traded away exactly this safety and could silently lose
+  data under concurrent saves, so it's been reverted to per-collection files.
 - **Sync**: no background timer. The app refreshes when you switch back to the tab or the
-  window regains focus, plus a **Refresh** link in the sidebar for on-demand sync. This (and
-  the single-file design above) is deliberately built to stay comfortably inside Vercel's free
-  Blob tier — see "Staying within the free tier" below.
+  window regains focus, plus a **Refresh** link in the sidebar for on-demand sync. Loading
+  everything still happens in one round trip from the browser's perspective (the server reads
+  all the files in parallel), so this stays easy on Vercel's free Blob tier — see "Staying
+  within the free tier" below.
 - **`/api/auth`**: login, session verification, and admin-only user management. Sessions are
   a signed, stateless token (HMAC-SHA256, no external JWT library) stored in `localStorage`
   and sent as a Bearer token on every request. Passwords are hashed with `scrypt` (Node's
@@ -36,14 +41,15 @@ Vercel Blob's Hobby (free) plan includes, per month: 1 GB storage, 10,000 read (
 operations, 2,000 write ("advanced") operations, and 10 GB data transfer. This app is built
 to stay well inside all four:
 
-- **Storage**: your data is a single JSON file, realistically a few KB to a few hundred KB
-  even after years of entries. Nowhere near 1 GB.
-- **Reads**: every load/refresh is exactly 1 Blob read (not 8), and reads only happen when
-  you open the app, switch back to the tab, or hit **Refresh** — not on a timer. Realistic
-  household use (a handful of visits a day, times two people) lands in the tens of reads a
-  month, nowhere near 10,000.
-- **Writes**: one write per save/delete action (adding a salary slip, an expense, a
-  snapshot, an asset). Even active use — a few entries a day — stays far under 2,000/month.
+- **Storage**: your data is a handful of small JSON files (one per data type), realistically a
+  few KB to a few hundred KB total even after years of entries. Nowhere near 1 GB.
+- **Reads**: a full load/refresh reads ~11 small files in parallel (one per data type) rather
+  than 1, and reads only happen when you open the app, switch back to the tab, or hit
+  **Refresh** — not on a timer. Realistic household use (a handful of visits a day, times two
+  people) lands at roughly a few hundred reads a month, still comfortably under 10,000.
+- **Writes**: one write per save/delete action, touching only that one data type's file
+  (adding a salary slip, an expense, a snapshot, an asset). Even active use — a few entries a
+  day — stays far under 2,000/month.
 - **Transfer**: proportional to storage size times read count; at this data size, negligible.
 
 If you ever significantly change the design (e.g. add a continuous background sync, or
