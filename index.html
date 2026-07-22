@@ -568,9 +568,8 @@ function viewDashboard(){
     }).join('');
 
   const govtTotals = govtBenefitsTotalsByProgram(profileKey);
-  const govtPills = Object.keys(govtTotals).length
-    ? Object.keys(govtTotals).map(k=>`<span class="pill">${esc(k)}: ${money(govtTotals[k], base)}</span>`).join(' ')
-    : '<span style="color:var(--ink-faint)">No entries yet</span>';
+  const govtRows = Object.keys(govtTotals).sort((a,b)=>govtTotals[b]-govtTotals[a])
+    .map(k=>`<tr><td class="txt">${esc(k)}</td><td>${money(govtTotals[k], base)}</td></tr>`).join('');
 
   return `
   <h1 class="page-title">Dashboard</h1>
@@ -612,7 +611,7 @@ function viewDashboard(){
 
   <div class="plain-card">
     <div class="card-title">Government benefits <span class="eyebrow">Totals by program</span></div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px;">${govtPills}</div>
+    ${govtRows ? `<table><tr><th>Program</th><th>Total</th></tr>${govtRows}</table>` : `<div class="empty-state">No government benefit entries added yet.</div>`}
   </div>
   `;
 }
