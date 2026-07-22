@@ -9,33 +9,26 @@ function uid() { return Date.now().toString(36) + Math.random().toString(36).sli
 function pathFor(col) { return `data-${col}.json`; }
 
 // This app has used a few different storage layouts over time: per-collection files, then one
-// combined 'ledger-state.json' file, now per-collection files again. Because the current layout
-// reuses the same file names as the very first one, we can't just check "does this file already
-// exist" to decide whether a collection has been migrated - a leftover file from that much
-// earlier version would look like it's "already there" and shadow the real, current data that's
-// actually sitting in the combined file. Instead this runs a forced one-time migration, guarded
-// by an explicit marker, that overwrites every per-collection file from the combined state.
-let migrationDone = null;
-async function ensureMigrated() {
-  if (migrationDone) return;
-  const marker = await loadJSON(MIGRATION_MARKER, null);
-  if (marker) { migrationDone = true; return; }
+// combined 'ledger-state.json' file, now per-collection files again. This migration already ran
+// once to split that combined file back out. It's intentionally NOT run automatically on every
+// request anymore - only via the explicit 'run-legacy-migration' action below - because
+// re-running it against a stale/incomplete read could overwrite current per-collection data
+// with an old snapshot. Kept here only as a manually-triggered safety net.
+async function runLegacyMigration() {
   const legacy = await loadState(null);
-  if (legacy) {
-    await Promise.all(ALLOWED_COLLECTIONS.map(async (col) => {
-      let val = legacy[col];
-      if (col === 'snapshots' && val === undefined && (legacy.snapshots_a || legacy.snapshots_b)) {
-        val = [...(legacy.snapshots_a || []), ...(legacy.snapshots_b || [])];
-      }
-      if (val === undefined) val = col === 'settings' ? null : [];
-      await saveJSON(pathFor(col), val);
-    }));
-  }
+  if (!legacy) return false;
+  await Promise.all(ALLOWED_COLLECTIONS.map(async (col) => {
+    let val = legacy[col];
+    if (col === 'snapshots' && val === undefined && (legacy.snapshots_a || legacy.snapshots_b)) {
+      val = [...(legacy.snapshots_a || []), ...(legacy.snapshots_b || [])];
+    }
+    if (val === undefined) val = col === 'settings' ? null : [];
+    await saveJSON(pathFor(col), val);
+  }));
   await saveJSON(MIGRATION_MARKER, { migratedAt: Date.now() });
-  migrationDone = true;
+  return true;
 }
 async function loadCollection(col) {
-  await ensureMigrated();
   const isSettings = col === 'settings';
   const existing = await loadJSON(pathFor(col), undefined);
   if (existing !== undefined) return existing;
@@ -52,6 +45,14 @@ module.exports = async (req, res) => {
 
     const user = verifyToken(getBearerToken(req));
     if (!user) { res.status(401).json({ error: 'Not authenticated' }); return; }
+
+    // Explicit, admin-only, manually-triggered migration/repair action. Never runs on its own.
+    if (req.method === 'POST' && req.query && req.query.action === 'run-legacy-migration') {
+      if (user.role !== 'admin') { res.status(403).json({ error: 'Admin only' }); return; }
+      const ran = await runLegacyMigration();
+      res.status(200).json({ ok: true, ranMigration: ran });
+      return;
+    }
 
     const col = (req.query && req.query.col) || '';
 
