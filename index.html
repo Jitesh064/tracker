@@ -216,7 +216,7 @@ const ASSET_CATEGORIES = ['Property','Vehicle','Jewelry','Electronics','Furnitur
 const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate','Retirement Fund','Other'];
 const FREQUENCY_OPTIONS = ['weekly','monthly','yearly'];
 const GOVT_PROGRAMS = ['SSS','PhilHealth','Pag-IBIG','Pag-IBIG MP2','GSIS','Other'];
-const GOVT_ENTRY_TYPES = ['Contribution','Benefit / Claim','Loan Repayment','Other'];
+const GOVT_ENTRY_TYPES = ['Employee Contribution','Employer Contribution','Benefit / Claim','Loan Repayment','Other'];
 const PAY_PERIOD_OPTIONS = ['Monthly','1st Half (1–15)','2nd Half (16–31)'];
 const CURRENCY_SUGGESTIONS = ['PHP','USD','INR','SGD','MYR','IDR','THB','VND','EUR','GBP','AED','AUD','JPY','HKD','KRW','CNY'];
 function currencyDatalistHTML(){
@@ -717,6 +717,12 @@ function draftSalaryHTML(p){
       <td><input type="number" step="0.01" value="${row.amount??0}" oninput="updateDraftRow('deductions',${i},'amount',this.value)"></td>
       <td><button class="icon-btn" onclick="removeDraftRow('deductions',${i})">✕</button></td>
     </tr>`).join('');
+  const employerRows = (d.employer_contributions||[]).map((row,i)=>`
+    <tr>
+      <td><input type="text" value="${esc(row.label)}" oninput="updateDraftRow('employer_contributions',${i},'label',this.value)"></td>
+      <td><input type="number" step="0.01" value="${row.amount??0}" oninput="updateDraftRow('employer_contributions',${i},'amount',this.value)"></td>
+      <td><button class="icon-btn" onclick="removeDraftRow('employer_contributions',${i})">✕</button></td>
+    </tr>`).join('');
   return `
   <div class="plain-card">
     <div class="card-title">Review extracted data <span class="eyebrow">Confirm before saving</span></div>
@@ -733,7 +739,12 @@ function draftSalaryHTML(p){
     <label class="field-label">Deductions</label>
     <table><tr><th>Label</th><th>Amount</th><th></th></tr>${dedRows || '<tr><td colspan="3" style="color:var(--ink-faint);font-family:var(--font-ui)">None listed</td></tr>'}</table>
     <div class="row-table-add" onclick="addDraftRow('deductions')">+ Add deduction</div>
-    <div class="notice" style="margin-top:10px;">Deductions labeled SSS, PhilHealth, Pag-IBIG (or MP2), or GSIS are automatically logged as contributions under <strong>Government Benefits</strong> when you save.</div>
+    <div class="notice" style="margin-top:10px;">Deductions labeled SSS, PhilHealth, Pag-IBIG (or MP2), or GSIS are automatically logged as <strong>Employee Contributions</strong> under Government Benefits when you save.</div>
+    <hr class="divider">
+    <label class="field-label">Employer Contributions <span style="font-weight:400;text-transform:none;font-size:11px">(if your slip shows the employer's share — not deducted from your pay)</span></label>
+    <table><tr><th>Label</th><th>Amount</th><th></th></tr>${employerRows || '<tr><td colspan="3" style="color:var(--ink-faint);font-family:var(--font-ui)">None listed</td></tr>'}</table>
+    <div class="row-table-add" onclick="addDraftRow('employer_contributions')">+ Add employer contribution</div>
+    <div class="notice" style="margin-top:10px;">These are logged as <strong>Employer Contributions</strong> under Government Benefits when you save — separately from the employee side above.</div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
       <button class="btn" onclick="saveDraftSalary('${p}')">Save entry</button>
@@ -751,7 +762,8 @@ async function onSalaryFileChosen(input){
     STATE.draft = { kind:'salary', data:{
       pay_date: json.pay_date || '', employer: json.employer || '', currency: (json.currency||STATE.settings.baseCurrency).toUpperCase(),
       gross_pay: json.gross_pay ?? null, net_pay: json.net_pay ?? null, pay_period: normalizePayPeriod(json.pay_period, json.pay_date),
-      deductions: Array.isArray(json.deductions) ? json.deductions : [], allowances: Array.isArray(json.allowances) ? json.allowances : []
+      deductions: Array.isArray(json.deductions) ? json.deductions : [], allowances: Array.isArray(json.allowances) ? json.allowances : [],
+      employer_contributions: Array.isArray(json.employer_contributions) ? json.employer_contributions : []
     }};
     render();
   }catch(e){
@@ -772,13 +784,14 @@ function normalizePayPeriod(raw, payDate){
   return PAY_PERIOD_OPTIONS[0];
 }
 function startManualSalary(p){
-  STATE.draft = { kind:'salary', data:{ pay_date:'', employer:'', currency:STATE.settings.baseCurrency, gross_pay:null, net_pay:null, pay_period:PAY_PERIOD_OPTIONS[0], deductions:[], allowances:[] } };
+  STATE.draft = { kind:'salary', data:{ pay_date:'', employer:'', currency:STATE.settings.baseCurrency, gross_pay:null, net_pay:null, pay_period:PAY_PERIOD_OPTIONS[0], deductions:[], allowances:[], employer_contributions:[] } };
   render();
 }
 function updateDraftField(field, value){ STATE.draft.data[field] = value; }
 function updateDraftRow(arrName, idx, field, value){ STATE.draft.data[arrName][idx][field] = field==='amount' ? num(value) : value; }
 function addDraftRow(arrName){
   if(arrName==='deductions') STATE.draft.data.deductions.push({label:'', amount:0});
+  if(arrName==='employer_contributions') STATE.draft.data.employer_contributions.push({label:'', amount:0});
   if(arrName==='transactions') STATE.draft.data.transactions.push({date:'', merchant:'', amount:0, category:'Other'});
   render();
 }
@@ -799,15 +812,25 @@ function matchGovtProgram(label){
 async function saveDraftSalary(p){
   const d = STATE.draft.data;
   const entry = { id: uid(), pay_date: d.pay_date, employer: d.employer, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
-    gross_pay: num(d.gross_pay), net_pay: num(d.net_pay), pay_period: d.pay_period||PAY_PERIOD_OPTIONS[0], deductions: d.deductions||[], allowances: d.allowances||[] };
+    gross_pay: num(d.gross_pay), net_pay: num(d.net_pay), pay_period: d.pay_period||PAY_PERIOD_OPTIONS[0], deductions: d.deductions||[], allowances: d.allowances||[],
+    employer_contributions: d.employer_contributions||[] };
   STATE.salary[p].push(entry);
   await apiSave('salary_'+p, entry);
 
-  // Auto-log matching deductions as Government Benefits contributions.
-  const matched = (entry.deductions||[]).filter(ded=> matchGovtProgram(ded.label) && num(ded.amount) > 0);
-  for(const ded of matched){
-    const gEntry = { id: uid(), program: matchGovtProgram(ded.label), entryType:'Contribution', date: entry.pay_date,
-      amount: num(ded.amount), currency: entry.currency, notes: `Auto-added from ${entry.employer||'salary'} slip dated ${fmtDate(entry.pay_date)}` };
+  // Auto-log matching deductions (employee side) and any listed employer contributions
+  // (employer side) as separate Government Benefits entries.
+  const noteFor = () => `Auto-added from ${entry.employer||'salary'} slip dated ${fmtDate(entry.pay_date)}`;
+  const matchedEmployee = (entry.deductions||[]).filter(ded=> matchGovtProgram(ded.label) && num(ded.amount) > 0);
+  for(const ded of matchedEmployee){
+    const gEntry = { id: uid(), program: matchGovtProgram(ded.label), entryType:'Employee Contribution', date: entry.pay_date,
+      amount: num(ded.amount), currency: entry.currency, notes: noteFor() };
+    STATE.govtBenefits[p].push(gEntry);
+    await apiSave('govtbenefits_'+p, gEntry);
+  }
+  const matchedEmployer = (entry.employer_contributions||[]).filter(ec=> matchGovtProgram(ec.label) && num(ec.amount) > 0);
+  for(const ec of matchedEmployer){
+    const gEntry = { id: uid(), program: matchGovtProgram(ec.label), entryType:'Employer Contribution', date: entry.pay_date,
+      amount: num(ec.amount), currency: entry.currency, notes: noteFor() };
     STATE.govtBenefits[p].push(gEntry);
     await apiSave('govtbenefits_'+p, gEntry);
   }
@@ -1364,7 +1387,7 @@ function draftGovtBenefitHTML(p){
   </div>`;
 }
 function startAddGovtBenefit(p){
-  STATE.draft = { kind:'govtbenefit', data:{ id:'', program:'SSS', entryType:'Contribution', date: new Date().toISOString().slice(0,10), amount:null, currency:STATE.settings.baseCurrency, notes:'' } };
+  STATE.draft = { kind:'govtbenefit', data:{ id:'', program:'SSS', entryType:'Employee Contribution', date: new Date().toISOString().slice(0,10), amount:null, currency:STATE.settings.baseCurrency, notes:'' } };
   render();
 }
 function startEditGovtBenefit(p, id){
@@ -1389,18 +1412,30 @@ async function deleteGovtBenefit(p, id){
 }
 async function syncGovtBenefitsFromSalary(p){
   const existing = STATE.govtBenefits[p]||[];
-  const alreadyLogged = (date, program, amount) => existing.some(g=>
-    g.date===date && g.program===program && Math.abs(num(g.amount)-amount) < 0.01 && (g.notes||'').startsWith('Auto-added from')
+  const alreadyLogged = (date, program, amount, entryType) => existing.some(g=>
+    g.date===date && g.program===program && g.entryType===entryType && Math.abs(num(g.amount)-amount) < 0.01 && (g.notes||'').startsWith('Auto-added from')
   );
   let added = 0;
   for(const s of (STATE.salary[p]||[])){
+    const note = `Auto-added from ${s.employer||'salary'} slip dated ${fmtDate(s.pay_date)}`;
     for(const ded of (s.deductions||[])){
       const program = matchGovtProgram(ded.label);
       const amount = num(ded.amount);
       if(!program || amount <= 0) continue;
-      if(alreadyLogged(s.pay_date, program, amount)) continue;
-      const gEntry = { id: uid(), program, entryType:'Contribution', date: s.pay_date, amount,
-        currency: s.currency||STATE.settings.baseCurrency, notes: `Auto-added from ${s.employer||'salary'} slip dated ${fmtDate(s.pay_date)}` };
+      if(alreadyLogged(s.pay_date, program, amount, 'Employee Contribution')) continue;
+      const gEntry = { id: uid(), program, entryType:'Employee Contribution', date: s.pay_date, amount,
+        currency: s.currency||STATE.settings.baseCurrency, notes: note };
+      STATE.govtBenefits[p].push(gEntry);
+      await apiSave('govtbenefits_'+p, gEntry);
+      added++;
+    }
+    for(const ec of (s.employer_contributions||[])){
+      const program = matchGovtProgram(ec.label);
+      const amount = num(ec.amount);
+      if(!program || amount <= 0) continue;
+      if(alreadyLogged(s.pay_date, program, amount, 'Employer Contribution')) continue;
+      const gEntry = { id: uid(), program, entryType:'Employer Contribution', date: s.pay_date, amount,
+        currency: s.currency||STATE.settings.baseCurrency, notes: note };
       STATE.govtBenefits[p].push(gEntry);
       await apiSave('govtbenefits_'+p, gEntry);
       added++;
