@@ -400,6 +400,14 @@ function fmtDate(d){
   try{ return new Date(d+'T00:00:00').toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}); }
   catch(e){ return d; }
 }
+function currentYear(){ return new Date().getFullYear(); }
+function isYTD(dateStr){ return !!dateStr && dateStr.slice(0,4) === String(currentYear()); }
+function monthKey(dateStr){ return (dateStr && dateStr.length>=7) ? dateStr.slice(0,7) : 'unknown'; }
+function monthLabel(key){
+  if(key==='unknown') return 'Unknown date';
+  const [y,m] = key.split('-');
+  return new Date(parseInt(y), parseInt(m)-1, 1).toLocaleDateString('en-US',{month:'short',year:'numeric'});
+}
 
 function readFileAsBase64(file){
   return new Promise((resolve,reject)=>{
@@ -669,11 +677,35 @@ function viewSalary(){
       <td>${canEdit() ? `<button class="icon-btn" onclick="deleteSalary('${p}','${s.id}')">✕</button>` : ''}</td>
     </tr>`).join('');
 
+  const base = STATE.settings.baseCurrency;
+  const y = currentYear();
+  let ytdGross = 0, ytdNet = 0;
+  const months = {};
+  list.forEach(s=>{
+    if(isYTD(s.pay_date)){ ytdGross += toBase(num(s.gross_pay), s.currency); ytdNet += toBase(num(s.net_pay), s.currency); }
+    const k = monthKey(s.pay_date);
+    if(!months[k]) months[k] = { gross:0, net:0 };
+    months[k].gross += toBase(num(s.gross_pay), s.currency);
+    months[k].net += toBase(num(s.net_pay), s.currency);
+  });
+  const monthRows = Object.keys(months).sort().reverse()
+    .map(k=>`<tr><td class="txt">${monthLabel(k)}</td><td>${money(months[k].gross, base)}</td><td>${money(months[k].net, base)}</td></tr>`).join('');
+
   return `
   <h1 class="page-title">Salary Slips</h1>
   <p class="page-sub">Upload ${esc(profileName(p))}'s payslip and let AI pull out the numbers, then confirm before saving.</p>
 
+  <div class="grid-2">
+    <div class="ledger-card"><div class="stat-label">YTD ${y} gross</div><div class="stat-value small">${money(ytdGross, base)}</div></div>
+    <div class="ledger-card"><div class="stat-label">YTD ${y} net</div><div class="stat-value small">${money(ytdNet, base)}</div></div>
+  </div>
+
   ${draftSalaryHTML(p)}
+
+  <div class="plain-card">
+    <div class="card-title">Monthly summary <span class="eyebrow">${esc(base)}, converted</span></div>
+    ${monthRows ? `<table><tr><th>Month</th><th>Gross</th><th>Net</th></tr>${monthRows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
+  </div>
 
   <div class="plain-card">
     <div class="card-title">History <span class="eyebrow">${list.length} entr${list.length===1?'y':'ies'}</span></div>
@@ -681,12 +713,54 @@ function viewSalary(){
   </div>`;
 }
 function viewSalaryHousehold(){
+  const base = STATE.settings.baseCurrency;
   const rows = ['a','b'].flatMap(p=> (STATE.salary[p]||[]).map(s=>({...s,_p:p})))
     .sort((a,b)=>(b.pay_date||'').localeCompare(a.pay_date||''))
     .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.pay_date)}</td><td class="txt">${esc(s.pay_period||'Monthly')}</td><td class="txt">${esc(s.employer||'—')}</td><td>${money(s.gross_pay,s.currency)}</td><td>${money(s.net_pay,s.currency)}</td></tr>`).join('');
+
+  // Monthly breakdown, both profiles side by side, converted to base currency.
+  const months = {};
+  ['a','b'].forEach(p=>{
+    (STATE.salary[p]||[]).forEach(s=>{
+      const k = monthKey(s.pay_date);
+      if(!months[k]) months[k] = { a:{gross:0,net:0}, b:{gross:0,net:0} };
+      months[k][p].gross += toBase(num(s.gross_pay), s.currency);
+      months[k][p].net += toBase(num(s.net_pay), s.currency);
+    });
+  });
+  const monthKeys = Object.keys(months).sort().reverse();
+  const monthRows = monthKeys.map(k=>{
+    const m = months[k];
+    const combinedNet = m.a.net + m.b.net;
+    return `<tr><td class="txt">${monthLabel(k)}</td><td>${money(m.a.gross, base)}</td><td>${money(m.a.net, base)}</td><td>${money(m.b.gross, base)}</td><td>${money(m.b.net, base)}</td><td>${money(combinedNet, base)}</td></tr>`;
+  }).join('');
+
+  // Year-to-date totals, per person and combined.
+  const y = currentYear();
+  const ytd = { a:{gross:0,net:0}, b:{gross:0,net:0} };
+  ['a','b'].forEach(p=>{
+    (STATE.salary[p]||[]).forEach(s=>{
+      if(!isYTD(s.pay_date)) return;
+      ytd[p].gross += toBase(num(s.gross_pay), s.currency);
+      ytd[p].net += toBase(num(s.net_pay), s.currency);
+    });
+  });
+
   return `
   <h1 class="page-title">Salary Slips</h1>
   <p class="page-sub">Combined view — switch to an individual profile to add a new entry.</p>
+
+  <div class="grid-3">
+    <div class="ledger-card"><div class="stat-label">${esc(profileName('a'))} — YTD ${y} net</div><div class="stat-value small">${money(ytd.a.net, base)}</div></div>
+    <div class="ledger-card"><div class="stat-label">${esc(profileName('b'))} — YTD ${y} net</div><div class="stat-value small">${money(ytd.b.net, base)}</div></div>
+    <div class="ledger-card"><div class="stat-label">Combined YTD ${y} net</div><div class="stat-value">${money(ytd.a.net+ytd.b.net, base)}</div></div>
+  </div>
+
+  <div class="plain-card">
+    <div class="card-title">Monthly summary <span class="eyebrow">${esc(base)}, converted</span></div>
+    ${monthRows ? `<table><tr><th>Month</th><th>${esc(profileName('a'))} Gross</th><th>${esc(profileName('a'))} Net</th><th>${esc(profileName('b'))} Gross</th><th>${esc(profileName('b'))} Net</th><th>Combined Net</th></tr>${monthRows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
+  </div>
+
   <div class="plain-card">
     <div class="card-title">Combined history</div>
     ${rows ? `<table><tr><th>Who</th><th>Pay date</th><th>Period</th><th>Employer</th><th>Gross</th><th>Net</th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
@@ -1303,6 +1377,7 @@ function viewGovtBenefits(){
   const isHouse = STATE.currentProfile === 'house';
   if(isHouse) return viewGovtBenefitsHousehold();
   const p = STATE.currentProfile;
+  const base = STATE.settings.baseCurrency;
   const list = [...(STATE.govtBenefits[p]||[])].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
   const totals = govtBenefitsTotalsByProgram(p);
   const rows = list.map(g=>`
@@ -1318,13 +1393,39 @@ function viewGovtBenefits(){
     ? Object.keys(totals).map(k=>`<span class="pill">${esc(k)}: ${money(totals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
     : '<span style="color:var(--ink-faint)">—</span>';
 
+  // Year-to-date, by program.
+  const y = currentYear();
+  const ytdTotals = {};
+  list.filter(g=>isYTD(g.date)).forEach(g=>{
+    const key = g.program||'Other';
+    ytdTotals[key] = (ytdTotals[key]||0) + toBase(num(g.amount), g.currency);
+  });
+  const ytdPills = Object.keys(ytdTotals).length
+    ? Object.keys(ytdTotals).map(k=>`<span class="pill">${esc(k)}: ${money(ytdTotals[k], base)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">—</span>';
+
+  // Monthly totals (all programs combined per month).
+  const months = {};
+  list.forEach(g=>{
+    const k = monthKey(g.date);
+    months[k] = (months[k]||0) + toBase(num(g.amount), g.currency);
+  });
+  const monthRows = Object.keys(months).sort().reverse()
+    .map(k=>`<tr><td class="txt">${monthLabel(k)}</td><td>${money(months[k], base)}</td></tr>`).join('');
+
   return `
   <h1 class="page-title">Government Benefits</h1>
   <p class="page-sub">${esc(profileName(p))}'s SSS, PhilHealth, Pag-IBIG, and similar records — entered manually, separate from payslip deductions.</p>
 
-  <div class="ledger-card" style="margin-bottom:20px;">
-    <div class="stat-label">Totals by program</div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${totalPills}</div>
+  <div class="grid-2">
+    <div class="ledger-card">
+      <div class="stat-label">All-time totals by program</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${totalPills}</div>
+    </div>
+    <div class="ledger-card">
+      <div class="stat-label">Year-to-date (${y}) by program</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${ytdPills}</div>
+    </div>
   </div>
 
   ${draftGovtBenefitHTML(p)}
@@ -1336,25 +1437,79 @@ function viewGovtBenefits(){
   </div>` : ''}
 
   <div class="plain-card">
+    <div class="card-title">Monthly totals <span class="eyebrow">${esc(base)}, converted</span></div>
+    ${monthRows ? `<table><tr><th>Month</th><th>Total</th></tr>${monthRows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>
+
+  <div class="plain-card">
     <div class="card-title">All entries <span class="eyebrow">${list.length}</span></div>
     ${rows ? `<table><tr><th>Date</th><th>Program</th><th>Type</th><th>Amount</th><th>Notes</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
   </div>`;
 }
 function viewGovtBenefitsHousehold(){
+  const base = STATE.settings.baseCurrency;
   const rows = ['a','b'].flatMap(p=> (STATE.govtBenefits[p]||[]).map(g=>({...g,_p:p})))
     .sort((a,b)=>(b.date||'').localeCompare(a.date||''))
     .map(g=>`<tr><td class="txt">${esc(profileName(g._p))}</td><td class="txt">${fmtDate(g.date)}</td><td class="txt">${esc(g.program||'Other')}</td><td class="txt">${esc(g.entryType||'Contribution')}</td><td>${money(g.amount,g.currency)}</td></tr>`).join('');
   const totals = govtBenefitsTotalsByProgram('house');
   const totalPills = Object.keys(totals).length
-    ? Object.keys(totals).map(k=>`<span class="pill">${esc(k)}: ${money(totals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
+    ? Object.keys(totals).map(k=>`<span class="pill">${esc(k)}: ${money(totals[k], base)}</span>`).join(' ')
     : '<span style="color:var(--ink-faint)">—</span>';
+
+  // Year-to-date, by program (combined) and per person.
+  const y = currentYear();
+  const ytdByProgram = {};
+  const ytdByPerson = { a:0, b:0 };
+  ['a','b'].forEach(p=>{
+    (STATE.govtBenefits[p]||[]).forEach(g=>{
+      if(!isYTD(g.date)) return;
+      const amt = toBase(num(g.amount), g.currency);
+      const key = g.program||'Other';
+      ytdByProgram[key] = (ytdByProgram[key]||0) + amt;
+      ytdByPerson[p] += amt;
+    });
+  });
+  const ytdPills = Object.keys(ytdByProgram).length
+    ? Object.keys(ytdByProgram).map(k=>`<span class="pill">${esc(k)}: ${money(ytdByProgram[k], base)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">—</span>';
+
+  // Monthly totals (combined across both profiles).
+  const months = {};
+  ['a','b'].forEach(p=>{
+    (STATE.govtBenefits[p]||[]).forEach(g=>{
+      const k = monthKey(g.date);
+      months[k] = (months[k]||0) + toBase(num(g.amount), g.currency);
+    });
+  });
+  const monthRows = Object.keys(months).sort().reverse()
+    .map(k=>`<tr><td class="txt">${monthLabel(k)}</td><td>${money(months[k], base)}</td></tr>`).join('');
+
   return `
   <h1 class="page-title">Government Benefits</h1>
   <p class="page-sub">Combined household record across both of you.</p>
-  <div class="ledger-card" style="margin-bottom:20px;">
-    <div class="stat-label">Combined totals by program</div>
-    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${totalPills}</div>
+
+  <div class="grid-3">
+    <div class="ledger-card"><div class="stat-label">${esc(profileName('a'))} — YTD ${y}</div><div class="stat-value small">${money(ytdByPerson.a, base)}</div></div>
+    <div class="ledger-card"><div class="stat-label">${esc(profileName('b'))} — YTD ${y}</div><div class="stat-value small">${money(ytdByPerson.b, base)}</div></div>
+    <div class="ledger-card"><div class="stat-label">Combined YTD ${y}</div><div class="stat-value">${money(ytdByPerson.a+ytdByPerson.b, base)}</div></div>
   </div>
+
+  <div class="grid-2">
+    <div class="ledger-card">
+      <div class="stat-label">All-time combined totals by program</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${totalPills}</div>
+    </div>
+    <div class="ledger-card">
+      <div class="stat-label">Year-to-date (${y}) combined by program</div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${ytdPills}</div>
+    </div>
+  </div>
+
+  <div class="plain-card">
+    <div class="card-title">Monthly totals <span class="eyebrow">${esc(base)}, converted</span></div>
+    ${monthRows ? `<table><tr><th>Month</th><th>Total</th></tr>${monthRows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>
+
   <div class="plain-card">
     <div class="card-title">All entries</div>
     ${rows ? `<table><tr><th>Who</th><th>Date</th><th>Program</th><th>Type</th><th>Amount</th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
