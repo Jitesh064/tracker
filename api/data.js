@@ -1,7 +1,7 @@
 const { loadJSON, saveJSON, loadState } = require('../lib/blob');
 const { verifyToken, getBearerToken } = require('../lib/auth');
 
-const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots', 'assets', 'recurring_a', 'recurring_b', 'govtbenefits_a', 'govtbenefits_b'];
+const ARRAY_SECTIONS = ['salary_a', 'salary_b', 'expenses_a', 'expenses_b', 'snapshots', 'assets', 'recurring_a', 'recurring_b', 'govtbenefits_a', 'govtbenefits_b', 'fx_transfers'];
 const ALLOWED_COLLECTIONS = ['settings', ...ARRAY_SECTIONS];
 const MIGRATION_MARKER = 'migration-v3-percollection.json';
 
