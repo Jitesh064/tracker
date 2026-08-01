@@ -214,7 +214,7 @@ let currentUser = null; // { id, username, name, role }
 
 const CATEGORY_OPTIONS = ['Groceries','Dining','Travel','Utilities','Shopping','Fuel','Subscriptions','Health','Education','Fees & Charges','Other'];
 const ASSET_CATEGORIES = ['Property','Vehicle','Jewelry','Electronics','Furniture','Other'];
-const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate','Retirement Fund','Other'];
+const INVESTMENT_TYPES = ['Stocks','Mutual Fund','Bonds','Crypto','Real Estate','Retirement Fund','Digital Savings / Goal Account','Other'];
 const FREQUENCY_OPTIONS = ['weekly','monthly','yearly'];
 const GOVT_PROGRAMS = ['SSS','PhilHealth','Pag-IBIG','Pag-IBIG MP2','GSIS','Other'];
 const GOVT_ENTRY_TYPES = ['Employee Contribution','Employer Contribution','Benefit / Claim','Loan Repayment','Other'];
@@ -525,6 +525,18 @@ function snapshotCurrencyTotals(s){
   (s.investments||[]).forEach(i=>{ const code=(i.currency||'').toUpperCase()||STATE.settings.baseCurrency; totals[code]=(totals[code]||0)+num(i.value); });
   return totals;
 }
+function snapshotOwnerTotals(s){
+  const totals = {};
+  if(!s) return totals;
+  (s.cash||[]).forEach(c=>{ const owner=c.owner||'Shared'; totals[owner]=(totals[owner]||0)+toBase(num(c.amount), c.currency); });
+  (s.investments||[]).forEach(i=>{ const owner=i.owner||'Shared'; totals[owner]=(totals[owner]||0)+toBase(num(i.value), i.currency); });
+  return totals;
+}
+function latestInterestHoldings(){
+  const s = latestSnapshot();
+  if(!s) return [];
+  return (s.investments||[]).filter(iv => iv.interestRate!=null && iv.interestRate!=='' && !isNaN(parseFloat(iv.interestRate)));
+}
 function mergeCurrencyTotals(...totalsList){
   const merged = {};
   totalsList.forEach(t=> Object.keys(t).forEach(code=> merged[code]=(merged[code]||0)+t[code]));
@@ -534,6 +546,11 @@ function currencyPillsHTML(totals){
   const codes = Object.keys(totals).sort((a,b)=> toBase(totals[b],b)-toBase(totals[a],a));
   if(!codes.length) return '<span style="color:var(--ink-faint)">—</span>';
   return codes.map(code=>`<span class="pill">${money(totals[code], code)}</span>`).join(' ');
+}
+function ownerPillsHTML(totals){
+  const owners = Object.keys(totals).sort((a,b)=> totals[b]-totals[a]);
+  if(!owners.length) return '<span style="color:var(--ink-faint)">—</span>';
+  return owners.map(o=>`<span class="pill">${esc(o)}: ${money(totals[o], STATE.settings.baseCurrency)}</span>`).join(' ');
 }
 function assetsTotalBase(profileFilter){
   return STATE.assets.filter(a=> profileFilter==='house' ? true : a.owner===profileFilter)
@@ -1095,16 +1112,31 @@ function viewInvest(){
     </tr>`;
   }).join('');
 
+  const ownerTotals = snapshotOwnerTotals(latest);
+  const interestHoldings = latestInterestHoldings();
+  const interestRows = interestHoldings.map(iv=>`<tr><td class="txt">${esc(iv.name)}</td><td class="txt">${esc(iv.type)}</td><td class="txt">${esc(iv.owner||'Shared')}</td><td>${parseFloat(iv.interestRate).toFixed(2)}%/yr</td><td>${money(iv.value, iv.currency)}</td></tr>`).join('');
+
   return `
   <h1 class="page-title">Cash &amp; Investments</h1>
   <p class="page-sub">One shared household record, as of a given date, in whatever currencies apply.</p>
 
-  <div class="plain-card">
-    <div class="card-title">Currency breakdown <span class="eyebrow">${latest ? 'As of '+fmtDate(latest.date) : 'No snapshot yet'}</span></div>
-    <div style="display:flex; flex-wrap:wrap; gap:10px;">${currencyPillsHTML(latestTotals)}</div>
+  <div class="grid-2">
+    <div class="plain-card">
+      <div class="card-title">Currency breakdown <span class="eyebrow">${latest ? 'As of '+fmtDate(latest.date) : 'No snapshot yet'}</span></div>
+      <div style="display:flex; flex-wrap:wrap; gap:10px;">${currencyPillsHTML(latestTotals)}</div>
+    </div>
+    <div class="plain-card">
+      <div class="card-title">By owner <span class="eyebrow">${esc(STATE.settings.baseCurrency)}, converted</span></div>
+      <div style="display:flex; flex-wrap:wrap; gap:10px;">${ownerPillsHTML(ownerTotals)}</div>
+    </div>
   </div>
 
   ${draftSnapshotHTML()}
+
+  ${interestRows ? `<div class="plain-card">
+    <div class="card-title">Interest-bearing holdings <span class="eyebrow">e.g. Maya, GCash goals</span></div>
+    <table><tr><th>Holding</th><th>Type</th><th>Owner</th><th>Rate</th><th>Value</th></tr>${interestRows}</table>
+  </div>` : ''}
 
   <div class="plain-card">
     <div class="card-title">Snapshots over time <span class="eyebrow">${list.length} recorded</span></div>
@@ -1127,27 +1159,32 @@ function draftSnapshotHTML(){
     </div>`;
   }
   const d = STATE.draft.data;
+  const ownerOptions = ['Shared', profileName('a'), profileName('b')];
+  const ownerSelect = (val, arrName, i) => `<select onchange="updateDraftRow('${arrName}',${i},'owner',this.value)">${ownerOptions.map(o=>`<option ${((val||'Shared')===o)?'selected':''}>${o}</option>`).join('')}</select>`;
   const cashRows = (d.cash||[]).map((c,i)=>`
     <tr><td><input type="text" placeholder="e.g. BPI Savings" value="${esc(c.label||'')}" oninput="updateDraftRow('cash',${i},'label',this.value)"></td>
     <td style="max-width:90px;"><input type="text" list="ledgerCurrencyList" value="${esc(c.currency||STATE.settings.baseCurrency)}" oninput="updateDraftRow('cash',${i},'currency',this.value.toUpperCase())"></td>
     <td><input type="number" step="0.01" value="${c.amount??0}" oninput="updateDraftRow('cash',${i},'amount',this.value)"></td>
+    <td style="max-width:110px;">${ownerSelect(c.owner,'cash',i)}</td>
     <td><button class="icon-btn" onclick="removeDraftRow('cash',${i})">✕</button></td></tr>`).join('');
   const invRows = (d.investments||[]).map((iv,i)=>`
-    <tr><td><input type="text" placeholder="e.g. VOO, Pag-IBIG MP2" value="${esc(iv.name||'')}" oninput="updateDraftRow('investments',${i},'name',this.value)"></td>
+    <tr><td><input type="text" placeholder="e.g. VOO, Maya Emergency Fund" value="${esc(iv.name||'')}" oninput="updateDraftRow('investments',${i},'name',this.value)"></td>
     <td><select onchange="updateDraftRow('investments',${i},'type',this.value)">${INVESTMENT_TYPES.map(t=>`<option ${iv.type===t?'selected':''}>${t}</option>`).join('')}</select></td>
     <td style="max-width:90px;"><input type="text" list="ledgerCurrencyList" value="${esc(iv.currency||STATE.settings.baseCurrency)}" oninput="updateDraftRow('investments',${i},'currency',this.value.toUpperCase())"></td>
     <td><input type="number" step="0.01" value="${iv.value??0}" oninput="updateDraftRow('investments',${i},'value',this.value)"></td>
+    <td style="max-width:90px;"><input type="number" step="0.01" placeholder="e.g. 3.5" value="${iv.interestRate??''}" oninput="updateDraftRow('investments',${i},'interestRate',this.value)"></td>
+    <td style="max-width:110px;">${ownerSelect(iv.owner,'investments',i)}</td>
     <td><button class="icon-btn" onclick="removeDraftRow('investments',${i})">✕</button></td></tr>`).join('');
   return `
   <div class="plain-card">
     <div class="card-title">New snapshot</div>
     <div class="field" style="max-width:200px;"><label class="field-label">As of date</label><input type="date" value="${esc(d.date||'')}" oninput="updateDraftField('date',this.value)"></div>
     <label class="field-label">Cash</label>
-    <table><tr><th>Where</th><th>Ccy</th><th>Amount</th><th></th></tr>${cashRows || '<tr><td colspan="4" style="color:var(--ink-faint);font-family:var(--font-ui)">None yet</td></tr>'}</table>
+    <table><tr><th>Where</th><th>Ccy</th><th>Amount</th><th>Owner</th><th></th></tr>${cashRows || '<tr><td colspan="5" style="color:var(--ink-faint);font-family:var(--font-ui)">None yet</td></tr>'}</table>
     <div class="row-table-add" onclick="addSnapshotRow('cash')">+ Add cash line</div>
     <hr class="divider">
-    <label class="field-label">Investments</label>
-    <table><tr><th>Holding</th><th>Type</th><th>Ccy</th><th>Value</th><th></th></tr>${invRows || '<tr><td colspan="5" style="color:var(--ink-faint);font-family:var(--font-ui)">None yet</td></tr>'}</table>
+    <label class="field-label">Investments <span style="font-weight:400;text-transform:none;font-size:11px">(includes goal-based savings like Maya/GCash — use the rate field for those)</span></label>
+    <table><tr><th>Holding</th><th>Type</th><th>Ccy</th><th>Value</th><th>Rate %/yr</th><th>Owner</th><th></th></tr>${invRows || '<tr><td colspan="7" style="color:var(--ink-faint);font-family:var(--font-ui)">None yet</td></tr>'}</table>
     <div class="row-table-add" onclick="addSnapshotRow('investments')">+ Add investment</div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
@@ -1161,8 +1198,8 @@ function startSnapshot(){
   render();
 }
 function addSnapshotRow(which){
-  if(which==='cash') STATE.draft.data.cash.push({label:'', currency:STATE.settings.baseCurrency, amount:0});
-  if(which==='investments') STATE.draft.data.investments.push({name:'', type:'Stocks', currency:STATE.settings.baseCurrency, value:0});
+  if(which==='cash') STATE.draft.data.cash.push({label:'', currency:STATE.settings.baseCurrency, amount:0, owner:'Shared'});
+  if(which==='investments') STATE.draft.data.investments.push({name:'', type:'Stocks', currency:STATE.settings.baseCurrency, value:0, interestRate:null, owner:'Shared'});
   render();
 }
 async function saveDraftSnapshot(){
