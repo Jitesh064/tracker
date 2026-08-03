@@ -204,6 +204,7 @@ const STATE = {
   expenses: { a:[], b:[] },
   snapshots: [], // shared/consolidated cash & investment holdings, not split per profile
   fxTransfers: [], // shared log of currency conversions
+  savingsGoals: [], // shared, fixed-term goal-based savings (e.g. Maya) - can be split between both profiles
   assets: [],
   recurring: { a:[], b:[] },
   govtBenefits: { a:[], b:[] },
@@ -220,6 +221,7 @@ const GOVT_PROGRAMS = ['SSS','PhilHealth','Pag-IBIG','Pag-IBIG MP2','GSIS','Othe
 const GOVT_ENTRY_TYPES = ['Employee Contribution','Employer Contribution','Benefit / Claim','Loan Repayment','Other'];
 const PAY_PERIOD_OPTIONS = ['Monthly','1st Half (1–15)','2nd Half (16–31)'];
 const CURRENCY_SUGGESTIONS = ['PHP','USD','INR','SGD','MYR','IDR','THB','VND','EUR','GBP','AED','AUD','JPY','HKD','KRW','CNY'];
+const GOAL_STATUS_OPTIONS = ['Active','Matured — Held','Withdrawn'];
 function currencyDatalistHTML(){
   return `<datalist id="ledgerCurrencyList">${CURRENCY_SUGGESTIONS.map(c=>`<option value="${c}">`).join('')}</datalist>`;
 }
@@ -338,6 +340,7 @@ async function loadAll(){
     STATE.expenses = { a: state.expenses_a||[], b: state.expenses_b||[] };
     STATE.snapshots = state.snapshots || [];
     STATE.fxTransfers = state.fx_transfers || [];
+    STATE.savingsGoals = state.savings_goals || [];
     STATE.assets = state.assets || [];
     STATE.recurring = { a: state.recurring_a||[], b: state.recurring_b||[] };
     STATE.govtBenefits = { a: state.govtbenefits_a||[], b: state.govtbenefits_b||[] };
@@ -532,10 +535,12 @@ function snapshotOwnerTotals(s){
   (s.investments||[]).forEach(i=>{ const owner=i.owner||'Shared'; totals[owner]=(totals[owner]||0)+toBase(num(i.value), i.currency); });
   return totals;
 }
-function latestInterestHoldings(){
-  const s = latestSnapshot();
-  if(!s) return [];
-  return (s.investments||[]).filter(iv => iv.interestRate!=null && iv.interestRate!=='' && !isNaN(parseFloat(iv.interestRate)));
+function projectedGoalInterest(principal, rate, startDate, maturityDate){
+  if(!startDate || !maturityDate || !rate) return 0;
+  const start = new Date(startDate+'T00:00:00');
+  const end = new Date(maturityDate+'T00:00:00');
+  const days = Math.max(0, (end-start)/(1000*60*60*24));
+  return principal * (rate/100) * (days/365);
 }
 function mergeCurrencyTotals(...totalsList){
   const merged = {};
@@ -1113,8 +1118,25 @@ function viewInvest(){
   }).join('');
 
   const ownerTotals = snapshotOwnerTotals(latest);
-  const interestHoldings = latestInterestHoldings();
-  const interestRows = interestHoldings.map(iv=>`<tr><td class="txt">${esc(iv.name)}</td><td class="txt">${esc(iv.type)}</td><td class="txt">${esc(iv.owner||'Shared')}</td><td>${parseFloat(iv.interestRate).toFixed(2)}%/yr</td><td>${money(iv.value, iv.currency)}</td></tr>`).join('');
+
+  const goalsList = [...(STATE.savingsGoals||[])].sort((a,b)=> (a.maturityDate||'').localeCompare(b.maturityDate||''));
+  const goalRows = goalsList.map(g=>{
+    const proj = projectedGoalInterest(num(g.principal), num(g.rate), g.startDate, g.maturityDate);
+    const splitParts = [];
+    if(num(g.shareA) > 0) splitParts.push(`${esc(profileName('a'))}: ${money(g.shareA, g.currency)}`);
+    if(num(g.shareB) > 0) splitParts.push(`${esc(profileName('b'))}: ${money(g.shareB, g.currency)}`);
+    const split = splitParts.length ? splitParts.join(' · ') : '<span style="color:var(--ink-faint)">—</span>';
+    return `<tr>
+      <td class="txt">${esc(g.name)}</td>
+      <td>${money(g.principal, g.currency)}</td>
+      <td class="txt">${num(g.rate).toFixed(2)}%/yr</td>
+      <td class="txt">${fmtDate(g.startDate)} → ${fmtDate(g.maturityDate)}</td>
+      <td class="txt">${esc(g.status||'Active')}</td>
+      <td class="txt">${split}</td>
+      <td>${money(proj, g.currency)}</td>
+      <td>${canEdit() ? `<a class="linklike" onclick="startEditGoal('${g.id}')">edit</a> · <button class="icon-btn" onclick="deleteGoal('${g.id}')">✕</button>` : ''}</td>
+    </tr>`;
+  }).join('');
 
   return `
   <h1 class="page-title">Cash &amp; Investments</h1>
@@ -1133,10 +1155,12 @@ function viewInvest(){
 
   ${draftSnapshotHTML()}
 
-  ${interestRows ? `<div class="plain-card">
-    <div class="card-title">Interest-bearing holdings <span class="eyebrow">e.g. Maya, GCash goals</span></div>
-    <table><tr><th>Holding</th><th>Type</th><th>Owner</th><th>Rate</th><th>Value</th></tr>${interestRows}</table>
-  </div>` : ''}
+  <div class="plain-card">
+    <div class="card-title">Savings goals <span class="eyebrow">Fixed-term, e.g. Maya, GCash</span></div>
+    <p class="page-sub" style="margin-bottom:14px;">For goal-based savings where you lock in an amount and rate and hold until a set date — can be split between the two of you if you both contributed.</p>
+    ${draftGoalHTML()}
+    ${goalRows ? `<table style="margin-top:14px;"><tr><th>Goal</th><th>Principal</th><th>Rate</th><th>Term</th><th>Status</th><th>Split</th><th>Projected interest</th><th></th></tr>${goalRows}</table>` : `<div class="empty-state">No savings goals added yet.</div>`}
+  </div>
 
   <div class="plain-card">
     <div class="card-title">Snapshots over time <span class="eyebrow">${list.length} recorded</span></div>
@@ -1277,6 +1301,69 @@ async function saveDraftFx(){
 async function deleteFx(id){
   STATE.fxTransfers = STATE.fxTransfers.filter(f=>f.id!==id);
   await apiDelete('fx_transfers', id);
+  render();
+}
+
+function draftGoalHTML(){
+  if(!(STATE.draft && STATE.draft.kind==='goal')){
+    if(!canEdit()) return '';
+    return `<button class="btn ghost" onclick="startAddGoal()">+ Add a savings goal</button>`;
+  }
+  const d = STATE.draft.data;
+  const proj = projectedGoalInterest(num(d.principal), num(d.rate), d.startDate, d.maturityDate);
+  return `
+  <div class="ledger-card">
+    <div class="card-title">${d.id ? 'Edit savings goal' : 'New savings goal'}</div>
+    <div class="field"><label class="field-label">Goal name</label><input type="text" placeholder="e.g. Maya - Emergency Fund" value="${esc(d.name||'')}" oninput="updateDraftField('name',this.value)"></div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Principal (amount put in)</label><input type="number" step="0.01" value="${d.principal??''}" oninput="updateDraftField('principal',this.value)"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field" style="max-width:120px"><label class="field-label">Rate %/yr</label><input type="number" step="0.01" value="${d.rate??''}" oninput="updateDraftField('rate',this.value)"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Start date</label><input type="date" value="${esc(d.startDate||'')}" oninput="updateDraftField('startDate',this.value)"></div>
+      <div class="field"><label class="field-label">Hold until (maturity)</label><input type="date" value="${esc(d.maturityDate||'')}" oninput="updateDraftField('maturityDate',this.value)"></div>
+      <div class="field" style="max-width:170px"><label class="field-label">Status</label><select onchange="updateDraftField('status',this.value)">${GOAL_STATUS_OPTIONS.map(s=>`<option ${d.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+    </div>
+    <label class="field-label">Split between you two <span style="font-weight:400;text-transform:none;font-size:11px">(leave one at 0 if it's only one of you)</span></label>
+    <div class="field-row">
+      <div class="field"><label class="field-label">${esc(profileName('a'))}'s share</label><input type="number" step="0.01" value="${d.shareA??0}" oninput="updateDraftField('shareA',this.value)"></div>
+      <div class="field"><label class="field-label">${esc(profileName('b'))}'s share</label><input type="number" step="0.01" value="${d.shareB??0}" oninput="updateDraftField('shareB',this.value)"></div>
+    </div>
+    <div class="notice">Projected interest if held to maturity: <strong>${money(proj, d.currency||STATE.settings.baseCurrency)}</strong> (simple interest estimate, not compounded)</div>
+    <div class="field" style="margin-top:12px;"><label class="field-label">Notes</label><input type="text" value="${esc(d.notes||'')}" oninput="updateDraftField('notes',this.value)"></div>
+    <hr class="divider">
+    <div style="display:flex; gap:10px;">
+      <button class="btn" onclick="saveDraftGoal()">Save</button>
+      <button class="btn ghost" onclick="cancelDraft()">Discard</button>
+    </div>
+  </div>`;
+}
+function startAddGoal(){
+  const today = new Date().toISOString().slice(0,10);
+  STATE.draft = { kind:'goal', data:{ id:'', name:'', principal:null, currency:STATE.settings.baseCurrency, rate:null, startDate:today, maturityDate:'', status:'Active', shareA:0, shareB:0, notes:'' } };
+  render();
+}
+function startEditGoal(id){
+  const g = (STATE.savingsGoals||[]).find(x=>x.id===id); if(!g) return;
+  STATE.draft = { kind:'goal', data:{ ...g } };
+  render();
+}
+async function saveDraftGoal(){
+  const d = STATE.draft.data;
+  if(!d.name || !num(d.principal)){ alert('Goal name and principal amount are required.'); return; }
+  const entry = { id: d.id||uid(), name: d.name, principal: num(d.principal), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
+    rate: num(d.rate), startDate: d.startDate||'', maturityDate: d.maturityDate||'', status: d.status||'Active',
+    shareA: num(d.shareA), shareB: num(d.shareB), notes: d.notes||'' };
+  STATE.savingsGoals = STATE.savingsGoals.filter(g=>g.id!==entry.id);
+  STATE.savingsGoals.push(entry);
+  await apiSave('savings_goals', entry);
+  STATE.draft = null;
+  render();
+}
+async function deleteGoal(id){
+  STATE.savingsGoals = STATE.savingsGoals.filter(g=>g.id!==id);
+  await apiDelete('savings_goals', id);
   render();
 }
 
@@ -1781,7 +1868,7 @@ function confirmResetAll(){
   resetAll();
 }
 async function resetAll(){
-  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]}; STATE.govtBenefits = {a:[],b:[]}; STATE.fxTransfers = [];
+  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]}; STATE.govtBenefits = {a:[],b:[]}; STATE.fxTransfers = []; STATE.savingsGoals = [];
   await Promise.all([
     apiReplace('settings', [STATE.settings]),
     apiReplace('salary_a', []), apiReplace('salary_b', []),
@@ -1790,7 +1877,8 @@ async function resetAll(){
     apiReplace('assets', []),
     apiReplace('recurring_a', []), apiReplace('recurring_b', []),
     apiReplace('govtbenefits_a', []), apiReplace('govtbenefits_b', []),
-    apiReplace('fx_transfers', [])
+    apiReplace('fx_transfers', []),
+    apiReplace('savings_goals', [])
   ]);
   render();
 }
