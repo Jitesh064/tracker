@@ -311,23 +311,38 @@ async function bootApp(){
 async function apiSave(col, item){
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'save', item }) });
-    if(r.status === 401){ logout(); return null; }
-    return await r.json();
-  }catch(e){ console.error('apiSave failed', col, e); return null; }
+    if(r.status === 401){ logout(); return { ok:false, error:'Session expired — please sign in again.' }; }
+    const json = await r.json().catch(()=>({}));
+    if(!r.ok || json.error) return { ok:false, error: json.error || ('Server error ('+r.status+')') };
+    return { ok:true, data: json.data };
+  }catch(e){ console.error('apiSave failed', col, e); return { ok:false, error:'Could not reach the server: '+e.message }; }
 }
 async function apiDelete(col, id){
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'delete', id }) });
-    if(r.status === 401){ logout(); return null; }
-    return await r.json();
-  }catch(e){ console.error('apiDelete failed', col, e); return null; }
+    if(r.status === 401){ logout(); return { ok:false, error:'Session expired — please sign in again.' }; }
+    const json = await r.json().catch(()=>({}));
+    if(!r.ok || json.error) return { ok:false, error: json.error || ('Server error ('+r.status+')') };
+    return { ok:true, data: json.data };
+  }catch(e){ console.error('apiDelete failed', col, e); return { ok:false, error:'Could not reach the server: '+e.message }; }
 }
 async function apiReplace(col, arr){
   try{
     const r = await fetch('/api/data?col='+col, { method:'POST', headers: authHdr(), body: JSON.stringify({ op:'replace', data: arr }) });
-    if(r.status === 401){ logout(); return null; }
-    return await r.json();
-  }catch(e){ console.error('apiReplace failed', col, e); return null; }
+    if(r.status === 401){ logout(); return { ok:false, error:'Session expired — please sign in again.' }; }
+    const json = await r.json().catch(()=>({}));
+    if(!r.ok || json.error) return { ok:false, error: json.error || ('Server error ('+r.status+')') };
+    return { ok:true, data: json.data };
+  }catch(e){ console.error('apiReplace failed', col, e); return { ok:false, error:'Could not reach the server: '+e.message }; }
+}
+// Every save/delete function calls this right after awaiting the server response. If the save
+// failed, this alerts the person and returns true (meaning: stop here, don't clear the draft or
+// pretend it worked) - this is what stops a failed save from silently looking successful until
+// the data vanishes on the next refresh.
+function saveFailed(result, verb){
+  if(result && result.ok) return false;
+  alert((verb||'Save')+' failed: ' + (result && result.error ? result.error : 'unknown error') + '\\n\\nYour change was NOT saved — please try again.');
+  return true;
 }
 
 async function loadAll(){
@@ -353,7 +368,10 @@ async function loadAll(){
     STATE.ready = true;
   }
 }
-async function saveSettings(){ await apiSave('settings', STATE.settings); }
+async function saveSettings(){
+  const result = await apiSave('settings', STATE.settings);
+  if(saveFailed(result, 'Settings save')) return;
+}
 
 // Event-driven sync instead of a constant timer: refresh when you come back to the tab
 // (visibility/focus), plus a manual "Refresh" link. This keeps Vercel Blob read counts low
@@ -916,33 +934,38 @@ async function saveDraftSalary(p){
   const entry = { id: uid(), pay_date: d.pay_date, employer: d.employer, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
     gross_pay: num(d.gross_pay), net_pay: num(d.net_pay), pay_period: d.pay_period||PAY_PERIOD_OPTIONS[0], deductions: d.deductions||[], allowances: d.allowances||[],
     employer_contributions: d.employer_contributions||[] };
+  const result = await apiSave('salary_'+p, entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.salary[p].push(entry);
-  await apiSave('salary_'+p, entry);
 
   // Auto-log matching deductions (employee side) and any listed employer contributions
-  // (employer side) as separate Government Benefits entries.
+  // (employer side) as separate Government Benefits entries. If one of these fails, the salary
+  // entry itself is already safely saved above - just warn rather than losing the whole save.
   const noteFor = () => `Auto-added from ${entry.employer||'salary'} slip dated ${fmtDate(entry.pay_date)}`;
   const matchedEmployee = (entry.deductions||[]).filter(ded=> matchGovtProgram(ded.label) && num(ded.amount) > 0);
   for(const ded of matchedEmployee){
     const gEntry = { id: uid(), program: matchGovtProgram(ded.label), entryType:'Employee Contribution', date: entry.pay_date,
       amount: num(ded.amount), currency: entry.currency, notes: noteFor() };
-    STATE.govtBenefits[p].push(gEntry);
-    await apiSave('govtbenefits_'+p, gEntry);
+    const gResult = await apiSave('govtbenefits_'+p, gEntry);
+    if(gResult && gResult.ok) STATE.govtBenefits[p].push(gEntry);
+    else console.error('Auto government-benefit entry failed to save', gEntry, gResult);
   }
   const matchedEmployer = (entry.employer_contributions||[]).filter(ec=> matchGovtProgram(ec.label) && num(ec.amount) > 0);
   for(const ec of matchedEmployer){
     const gEntry = { id: uid(), program: matchGovtProgram(ec.label), entryType:'Employer Contribution', date: entry.pay_date,
       amount: num(ec.amount), currency: entry.currency, notes: noteFor() };
-    STATE.govtBenefits[p].push(gEntry);
-    await apiSave('govtbenefits_'+p, gEntry);
+    const gResult = await apiSave('govtbenefits_'+p, gEntry);
+    if(gResult && gResult.ok) STATE.govtBenefits[p].push(gEntry);
+    else console.error('Auto government-benefit entry failed to save', gEntry, gResult);
   }
 
   STATE.draft = null;
   render();
 }
 async function deleteSalary(p, id){
+  const result = await apiDelete('salary_'+p, id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.salary[p] = STATE.salary[p].filter(s=>s.id!==id);
-  await apiDelete('salary_'+p, id);
   render();
 }
 
@@ -1176,15 +1199,17 @@ async function saveDraftExpense(p){
   const entry = { id: d.id||uid(), statement_date: d.statement_date, card_name: d.card_name, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
     total_amount_due: num(d.total_amount_due), minimum_amount_due: d.minimum_amount_due!=null ? num(d.minimum_amount_due) : null,
     paidByA: num(d.paidByA), paidByB: num(d.paidByB), transactions: d.transactions||[] };
+  const result = await apiSave('expenses_'+p, entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.expenses[p] = STATE.expenses[p].filter(s=>s.id!==entry.id);
   STATE.expenses[p].push(entry);
-  await apiSave('expenses_'+p, entry);
   STATE.draft = null;
   render();
 }
 async function deleteExpense(p, id){
+  const result = await apiDelete('expenses_'+p, id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.expenses[p] = STATE.expenses[p].filter(s=>s.id!==id);
-  await apiDelete('expenses_'+p, id);
   render();
 }
 
@@ -1324,16 +1349,21 @@ async function saveDraftSnapshot(){
   const d = STATE.draft.data;
   const entry = { id: uid(), date: d.date, cash: d.cash||[], investments: d.investments||[] };
   const existing = STATE.snapshots.find(s=>s.date===entry.date);
-  if(existing) await apiDelete('snapshots', existing.id);
+  if(existing){
+    const delResult = await apiDelete('snapshots', existing.id);
+    if(saveFailed(delResult, 'Save')) return;
+  }
+  const result = await apiSave('snapshots', entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.snapshots = STATE.snapshots.filter(s=>s.date!==entry.date);
   STATE.snapshots.push(entry);
-  await apiSave('snapshots', entry);
   STATE.draft = null;
   render();
 }
 async function deleteSnapshot(id){
+  const result = await apiDelete('snapshots', id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.snapshots = STATE.snapshots.filter(s=>s.id!==id);
-  await apiDelete('snapshots', id);
   render();
 }
 
@@ -1386,15 +1416,17 @@ async function saveDraftFx(){
     toAmount: num(d.toAmount), toCurrency: (d.toCurrency||'').toUpperCase(),
     fee: d.fee!=null ? num(d.fee) : 0, feeCurrency: (d.feeCurrency||d.fromCurrency||'').toUpperCase(),
     notes: d.notes||'' };
+  const result = await apiSave('fx_transfers', entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.fxTransfers = STATE.fxTransfers.filter(f=>f.id!==entry.id);
   STATE.fxTransfers.push(entry);
-  await apiSave('fx_transfers', entry);
   STATE.draft = null;
   render();
 }
 async function deleteFx(id){
+  const result = await apiDelete('fx_transfers', id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.fxTransfers = STATE.fxTransfers.filter(f=>f.id!==id);
-  await apiDelete('fx_transfers', id);
   render();
 }
 
@@ -1449,15 +1481,17 @@ async function saveDraftGoal(){
   const entry = { id: d.id||uid(), name: d.name, principal: num(d.principal), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
     rate: num(d.rate), startDate: d.startDate||'', maturityDate: d.maturityDate||'', status: d.status||'Active',
     shareA: num(d.shareA), shareB: num(d.shareB), notes: d.notes||'' };
+  const result = await apiSave('savings_goals', entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.savingsGoals = STATE.savingsGoals.filter(g=>g.id!==entry.id);
   STATE.savingsGoals.push(entry);
-  await apiSave('savings_goals', entry);
   STATE.draft = null;
   render();
 }
 async function deleteGoal(id){
+  const result = await apiDelete('savings_goals', id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.savingsGoals = STATE.savingsGoals.filter(g=>g.id!==id);
-  await apiDelete('savings_goals', id);
   render();
 }
 
@@ -1528,14 +1562,16 @@ async function saveDraftAsset(){
   const d = STATE.draft.data;
   const entry = { id: uid(), owner: STATE.currentProfile, name: d.name||'Untitled asset', category: d.category||'Other',
     value: num(d.value), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency, notes: d.notes||'', image: d.image||null };
+  const result = await apiSave('assets', entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.assets.push(entry);
-  await apiSave('assets', entry);
   STATE.draft = null;
   render();
 }
 async function deleteAsset(id){
+  const result = await apiDelete('assets', id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.assets = STATE.assets.filter(a=>a.id!==id);
-  await apiDelete('assets', id);
   render();
 }
 
@@ -1617,15 +1653,17 @@ async function saveDraftCard(){
   const entry = { id: d.id||uid(), owner: d.owner||STATE.currentProfile, nickname: d.nickname, issuer: d.issuer||'',
     last4: (d.last4||'').replace(/\D/g,'').slice(0,4), creditLimit: num(d.creditLimit), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
     annualFee: d.annualFee!=null ? num(d.annualFee) : 0, statementDay: d.statementDay?num(d.statementDay):null, dueDay: d.dueDay?num(d.dueDay):null, notes: d.notes||'' };
+  const result = await apiSave('creditcards', entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.creditCards = STATE.creditCards.filter(c=>c.id!==entry.id);
   STATE.creditCards.push(entry);
-  await apiSave('creditcards', entry);
   STATE.draft = null;
   render();
 }
 async function deleteCard(id){
+  const result = await apiDelete('creditcards', id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.creditCards = STATE.creditCards.filter(c=>c.id!==id);
-  await apiDelete('creditcards', id);
   render();
 }
 
@@ -1741,15 +1779,17 @@ async function saveDraftRecurring(p){
   if(!d.name){ alert('Name is required'); return; }
   const entry = { id: d.id||uid(), name: d.name, category: d.category||'Other', amount: num(d.amount),
     currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency, frequency: d.frequency||'monthly', notes: d.notes||'', active: d.active!==false };
+  const result = await apiSave('recurring_'+p, entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.recurring[p] = STATE.recurring[p].filter(r=>r.id!==entry.id);
   STATE.recurring[p].push(entry);
-  await apiSave('recurring_'+p, entry);
   STATE.draft = null;
   render();
 }
 async function deleteRecurring(p, id){
+  const result = await apiDelete('recurring_'+p, id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.recurring[p] = STATE.recurring[p].filter(r=>r.id!==id);
-  await apiDelete('recurring_'+p, id);
   render();
 }
 
@@ -1946,15 +1986,17 @@ async function saveDraftGovtBenefit(p){
   const d = STATE.draft.data;
   const entry = { id: d.id||uid(), program: d.program||'Other', entryType: d.entryType||'Contribution', date: d.date||'',
     amount: num(d.amount), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency, notes: d.notes||'' };
+  const result = await apiSave('govtbenefits_'+p, entry);
+  if(saveFailed(result, 'Save')) return;
   STATE.govtBenefits[p] = STATE.govtBenefits[p].filter(g=>g.id!==entry.id);
   STATE.govtBenefits[p].push(entry);
-  await apiSave('govtbenefits_'+p, entry);
   STATE.draft = null;
   render();
 }
 async function deleteGovtBenefit(p, id){
+  const result = await apiDelete('govtbenefits_'+p, id);
+  if(saveFailed(result, 'Delete')) return;
   STATE.govtBenefits[p] = STATE.govtBenefits[p].filter(g=>g.id!==id);
-  await apiDelete('govtbenefits_'+p, id);
   render();
 }
 async function syncGovtBenefitsFromSalary(p){
@@ -1962,7 +2004,7 @@ async function syncGovtBenefitsFromSalary(p){
   const alreadyLogged = (date, program, amount, entryType) => existing.some(g=>
     g.date===date && g.program===program && g.entryType===entryType && Math.abs(num(g.amount)-amount) < 0.01 && (g.notes||'').startsWith('Auto-added from')
   );
-  let added = 0;
+  let added = 0, failed = 0;
   for(const s of (STATE.salary[p]||[])){
     const note = `Auto-added from ${s.employer||'salary'} slip dated ${fmtDate(s.pay_date)}`;
     for(const ded of (s.deductions||[])){
@@ -1972,9 +2014,8 @@ async function syncGovtBenefitsFromSalary(p){
       if(alreadyLogged(s.pay_date, program, amount, 'Employee Contribution')) continue;
       const gEntry = { id: uid(), program, entryType:'Employee Contribution', date: s.pay_date, amount,
         currency: s.currency||STATE.settings.baseCurrency, notes: note };
-      STATE.govtBenefits[p].push(gEntry);
-      await apiSave('govtbenefits_'+p, gEntry);
-      added++;
+      const result = await apiSave('govtbenefits_'+p, gEntry);
+      if(result && result.ok){ STATE.govtBenefits[p].push(gEntry); existing.push(gEntry); added++; } else failed++;
     }
     for(const ec of (s.employer_contributions||[])){
       const program = matchGovtProgram(ec.label);
@@ -1983,12 +2024,13 @@ async function syncGovtBenefitsFromSalary(p){
       if(alreadyLogged(s.pay_date, program, amount, 'Employer Contribution')) continue;
       const gEntry = { id: uid(), program, entryType:'Employer Contribution', date: s.pay_date, amount,
         currency: s.currency||STATE.settings.baseCurrency, notes: note };
-      STATE.govtBenefits[p].push(gEntry);
-      await apiSave('govtbenefits_'+p, gEntry);
-      added++;
+      const result = await apiSave('govtbenefits_'+p, gEntry);
+      if(result && result.ok){ STATE.govtBenefits[p].push(gEntry); existing.push(gEntry); added++; } else failed++;
     }
   }
-  alert(added ? `Added ${added} entr${added===1?'y':'ies'} from salary history.` : 'Nothing new to add — everything matching was already logged.');
+  let msg = added ? `Added ${added} entr${added===1?'y':'ies'} from salary history.` : 'Nothing new to add — everything matching was already logged.';
+  if(failed) msg += ` (${failed} failed to save — try running this again.)`;
+  alert(msg);
   render();
 }
 
