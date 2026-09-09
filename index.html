@@ -947,6 +947,28 @@ async function deleteSalary(p, id){
 }
 
 /* ============================= EXPENSES VIEW ============================= */
+function describePaidBy(s){
+  if(s.paidByA!=null || s.paidByB!=null){
+    const parts = [];
+    if(num(s.paidByA) > 0) parts.push(`${profileName('a')}: ${money(s.paidByA, s.currency)}`);
+    if(num(s.paidByB) > 0) parts.push(`${profileName('b')}: ${money(s.paidByB, s.currency)}`);
+    return parts.length ? parts.join(' · ') : '—';
+  }
+  return s.paidBy || '—'; // legacy entries saved before the amount split existed
+}
+function expensePaidTotals(list){
+  const totals = {};
+  list.forEach(s=>{
+    if(s.paidByA!=null || s.paidByB!=null){
+      if(num(s.paidByA) > 0) totals[profileName('a')] = (totals[profileName('a')]||0) + toBase(num(s.paidByA), s.currency);
+      if(num(s.paidByB) > 0) totals[profileName('b')] = (totals[profileName('b')]||0) + toBase(num(s.paidByB), s.currency);
+    } else {
+      const who = s.paidBy || 'Unspecified';
+      totals[who] = (totals[who]||0) + toBase(num(s.total_amount_due), s.currency);
+    }
+  });
+  return totals;
+}
 function viewExpenses(){
   const isHouse = STATE.currentProfile === 'house';
   if(isHouse) return viewExpensesHousehold();
@@ -957,17 +979,16 @@ function viewExpenses(){
       <td class="txt">${fmtDate(s.statement_date)}</td>
       <td class="txt">${esc(s.card_name||'—')}</td>
       <td>${money(s.total_amount_due, s.currency)}</td>
-      <td class="txt">${esc(s.paidBy||'—')}</td>
+      <td class="txt">${describePaidBy(s)}</td>
       <td class="txt">${(s.transactions||[]).length} txns</td>
-      <td><a class="linklike" onclick="toggleStatementExpand('${s.id}')">view</a></td>
+      <td><a class="linklike" onclick="toggleStatementExpand('${s.id}')">view</a>${canEdit() ? ` · <a class="linklike" onclick="startEditExpense('${p}','${s.id}')">edit</a>` : ''}</td>
       <td>${canEdit() ? `<button class="icon-btn" onclick="deleteExpense('${p}','${s.id}')">✕</button>` : ''}</td>
     </tr>
     <tr id="expand-${s.id}" style="display:none;"><td colspan="7">${statementTxnTable(s)}</td></tr>
   `).join('');
 
   // Who's paid how much, this profile's statements only.
-  const paidTotals = {};
-  list.forEach(s=>{ const who = s.paidBy||'Unspecified'; paidTotals[who] = (paidTotals[who]||0) + toBase(num(s.total_amount_due), s.currency); });
+  const paidTotals = expensePaidTotals(list);
   const paidPills = Object.keys(paidTotals).length
     ? Object.keys(paidTotals).map(k=>`<span class="pill">${esc(k)}: ${money(paidTotals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
     : '<span style="color:var(--ink-faint)">—</span>';
@@ -1003,13 +1024,12 @@ function viewExpensesHousehold(){
     const c = t.category || 'Other';
     catTotals[c] = (catTotals[c]||0) + toBase(num(t.amount), s.currency);
   }));
-  const paidTotals = {};
-  all.forEach(s=>{ const who = s.paidBy||'Unspecified'; paidTotals[who] = (paidTotals[who]||0) + toBase(num(s.total_amount_due), s.currency); });
+  const paidTotals = expensePaidTotals(all);
   const paidPills = Object.keys(paidTotals).length
     ? Object.keys(paidTotals).map(k=>`<span class="pill">${esc(k)}: ${money(paidTotals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
     : '<span style="color:var(--ink-faint)">—</span>';
   const rows = all.sort((a,b)=>(b.statement_date||'').localeCompare(a.statement_date||''))
-    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td><td class="txt">${esc(s.paidBy||'—')}</td></tr>`).join('');
+    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td><td class="txt">${describePaidBy(s)}</td></tr>`).join('');
   return `
   <h1 class="page-title">Card Statements</h1>
   <p class="page-sub">Combined spend across both of you, by category, in ${esc(STATE.settings.baseCurrency)}.</p>
@@ -1065,6 +1085,12 @@ function draftExpenseHTML(p){
       <td><input type="number" step="0.01" value="${t.amount??0}" oninput="updateDraftRow('transactions',${i},'amount',this.value)"></td>
       <td><button class="icon-btn" onclick="removeDraftRow('transactions',${i})">✕</button></td>
     </tr>`).join('');
+  const totalNum = num(d.total_amount_due);
+  const splitSum = num(d.paidByA) + num(d.paidByB);
+  const remaining = totalNum - splitSum;
+  const remainingHTML = Math.abs(remaining) < 0.01
+    ? `<span class="pos">Fully allocated</span>`
+    : `<span class="${remaining>0?'':'neg'}">${money(remaining, d.currency)} ${remaining>0?'left to assign':'over-assigned'}</span>`;
   return `
   <div class="plain-card">
     <div class="card-title">Review extracted data <span class="eyebrow">Confirm before saving</span></div>
@@ -1073,21 +1099,25 @@ function draftExpenseHTML(p){
       <div class="field"><label class="field-label">Card / bank</label><input type="text" value="${esc(d.card_name||'')}" oninput="updateDraftField('card_name',this.value)"></div>
       <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
     </div>
+    <div class="field"><label class="field-label">Total amount due</label><input type="number" step="0.01" value="${d.total_amount_due??''}" onchange="updateExpenseTotal(this.value,'${p}')"></div>
+    <label class="field-label">Who paid <span style="font-weight:400;text-transform:none;font-size:11px">(defaults to the full total on ${esc(profileName(p))}'s side — adjust if it was split)</span></label>
     <div class="field-row">
-      <div class="field"><label class="field-label">Total amount due</label><input type="number" step="0.01" value="${d.total_amount_due??''}" oninput="updateDraftField('total_amount_due',this.value)"></div>
-      <div class="field" style="max-width:170px"><label class="field-label">Paid by</label><select onchange="updateDraftField('paidBy',this.value)">${paidByOptions().map(o=>`<option ${d.paidBy===o?'selected':''}>${o}</option>`).join('')}</select></div>
+      <div class="field"><label class="field-label">${esc(profileName('a'))} paid</label><input type="number" step="0.01" value="${d.paidByA??0}" oninput="updateExpenseSplit('paidByA',this.value)"></div>
+      <div class="field"><label class="field-label">${esc(profileName('b'))} paid</label><input type="number" step="0.01" value="${d.paidByB??0}" oninput="updateExpenseSplit('paidByB',this.value)"></div>
     </div>
+    <div class="notice">${remainingHTML} of ${money(totalNum, d.currency)} total.</div>
+    <hr class="divider">
     <label class="field-label">Transactions</label>
     <table><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th><th></th></tr>${txnRows || '<tr><td colspan="5" style="color:var(--ink-faint);font-family:var(--font-ui)">None listed</td></tr>'}</table>
     <div class="row-table-add" onclick="addDraftRow('transactions')">+ Add transaction</div>
     <hr class="divider">
     <div style="display:flex; gap:10px;">
-      <button class="btn" onclick="saveDraftExpense('${p}')">Save statement</button>
+      <button class="btn" onclick="saveDraftExpense('${p}')">${d.id ? 'Save changes' : 'Save statement'}</button>
       <button class="btn ghost" onclick="cancelDraft()">Discard</button>
     </div>
   </div>`;
 }
-function paidByOptions(){ return [profileName('a'), profileName('b'), 'Split/Joint']; }
+
 async function onSoaFileChosen(input){
   const file = input.files[0]; if(!file) return;
   const status = document.getElementById('soaExtractStatus');
@@ -1095,9 +1125,12 @@ async function onSoaFileChosen(input){
   try{
     const base64 = await readFileAsBase64(file);
     const json = await extractDocument(base64, file.type || 'application/pdf', 'soa');
+    const p = STATE.currentProfile;
+    const total = num(json.total_amount_due);
     STATE.draft = { kind:'expense', data:{
       statement_date: json.statement_date || '', card_name: json.card_name || '', currency:(json.currency||STATE.settings.baseCurrency).toUpperCase(),
-      total_amount_due: json.total_amount_due ?? null, minimum_amount_due: json.minimum_amount_due ?? null, paidBy: profileName(STATE.currentProfile),
+      total_amount_due: json.total_amount_due ?? null, minimum_amount_due: json.minimum_amount_due ?? null,
+      paidByA: p==='a' ? total : 0, paidByB: p==='b' ? total : 0, splitManual:false,
       transactions: Array.isArray(json.transactions) ? json.transactions : []
     }};
     render();
@@ -1106,14 +1139,44 @@ async function onSoaFileChosen(input){
   }
 }
 function startManualExpense(p){
-  STATE.draft = { kind:'expense', data:{ statement_date:'', card_name:'', currency:STATE.settings.baseCurrency, total_amount_due:null, minimum_amount_due:null, paidBy: profileName(p), transactions:[] } };
+  STATE.draft = { kind:'expense', data:{ statement_date:'', card_name:'', currency:STATE.settings.baseCurrency, total_amount_due:null, minimum_amount_due:null, paidByA:0, paidByB:0, splitManual:false, transactions:[] } };
   render();
+}
+function startEditExpense(p, id){
+  const s = (STATE.expenses[p]||[]).find(x=>x.id===id); if(!s) return;
+  // Older entries saved before the amount split existed only have a 'paidBy' name string -
+  // carry that over as a full allocation to whichever side matches it, otherwise default to p.
+  let paidByA = s.paidByA, paidByB = s.paidByB;
+  if(paidByA==null && paidByB==null){
+    const total = num(s.total_amount_due);
+    const wasA = s.paidBy === profileName('a');
+    const wasB = s.paidBy === profileName('b');
+    paidByA = wasA ? total : (wasB ? 0 : (p==='a'?total:0));
+    paidByB = wasB ? total : (wasA ? 0 : (p==='b'?total:0));
+  }
+  STATE.draft = { kind:'expense', data:{ ...s, paidByA, paidByB, splitManual:true } };
+  render();
+}
+function updateExpenseTotal(value, p){
+  const d = STATE.draft.data;
+  d.total_amount_due = value;
+  if(!d.splitManual){
+    const total = num(value);
+    d.paidByA = p==='a' ? total : 0;
+    d.paidByB = p==='b' ? total : 0;
+  }
+  render();
+}
+function updateExpenseSplit(field, value){
+  STATE.draft.data.splitManual = true;
+  STATE.draft.data[field] = num(value);
 }
 async function saveDraftExpense(p){
   const d = STATE.draft.data;
-  const entry = { id: uid(), statement_date: d.statement_date, card_name: d.card_name, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
+  const entry = { id: d.id||uid(), statement_date: d.statement_date, card_name: d.card_name, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
     total_amount_due: num(d.total_amount_due), minimum_amount_due: d.minimum_amount_due!=null ? num(d.minimum_amount_due) : null,
-    paidBy: d.paidBy || profileName(p), transactions: d.transactions||[] };
+    paidByA: num(d.paidByA), paidByB: num(d.paidByB), transactions: d.transactions||[] };
+  STATE.expenses[p] = STATE.expenses[p].filter(s=>s.id!==entry.id);
   STATE.expenses[p].push(entry);
   await apiSave('expenses_'+p, entry);
   STATE.draft = null;
