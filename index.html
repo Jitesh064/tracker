@@ -205,6 +205,7 @@ const STATE = {
   snapshots: [], // shared/consolidated cash & investment holdings, not split per profile
   fxTransfers: [], // shared log of currency conversions
   savingsGoals: [], // shared, fixed-term goal-based savings (e.g. Maya) - can be split between both profiles
+  creditCards: [], // reference list, owner-tagged like assets - never stores full numbers/CVV
   assets: [],
   recurring: { a:[], b:[] },
   govtBenefits: { a:[], b:[] },
@@ -341,6 +342,7 @@ async function loadAll(){
     STATE.snapshots = state.snapshots || [];
     STATE.fxTransfers = state.fx_transfers || [];
     STATE.savingsGoals = state.savings_goals || [];
+    STATE.creditCards = state.creditcards || [];
     STATE.assets = state.assets || [];
     STATE.recurring = { a: state.recurring_a||[], b: state.recurring_b||[] };
     STATE.govtBenefits = { a: state.govtbenefits_a||[], b: state.govtbenefits_b||[] };
@@ -465,6 +467,7 @@ function sidebarHTML(){
     ['expenses','Card Statements'],
     ['recurring','Recurring Expenses'],
     ['govtbenefits','Government Benefits'],
+    ['creditcards','Credit Cards'],
     ['invest','Cash &amp; Investments'],
     ['assets','Assets'],
     ['settings','Settings'],
@@ -504,6 +507,7 @@ function viewHTML(){
     case 'assets': return viewAssets();
     case 'recurring': return viewRecurring();
     case 'govtbenefits': return viewGovtBenefits();
+    case 'creditcards': return viewCreditCards();
     case 'settings': return viewSettings();
     case 'users': return viewUsers();
     default: return '';
@@ -953,22 +957,35 @@ function viewExpenses(){
       <td class="txt">${fmtDate(s.statement_date)}</td>
       <td class="txt">${esc(s.card_name||'—')}</td>
       <td>${money(s.total_amount_due, s.currency)}</td>
+      <td class="txt">${esc(s.paidBy||'—')}</td>
       <td class="txt">${(s.transactions||[]).length} txns</td>
       <td><a class="linklike" onclick="toggleStatementExpand('${s.id}')">view</a></td>
       <td>${canEdit() ? `<button class="icon-btn" onclick="deleteExpense('${p}','${s.id}')">✕</button>` : ''}</td>
     </tr>
-    <tr id="expand-${s.id}" style="display:none;"><td colspan="6">${statementTxnTable(s)}</td></tr>
+    <tr id="expand-${s.id}" style="display:none;"><td colspan="7">${statementTxnTable(s)}</td></tr>
   `).join('');
+
+  // Who's paid how much, this profile's statements only.
+  const paidTotals = {};
+  list.forEach(s=>{ const who = s.paidBy||'Unspecified'; paidTotals[who] = (paidTotals[who]||0) + toBase(num(s.total_amount_due), s.currency); });
+  const paidPills = Object.keys(paidTotals).length
+    ? Object.keys(paidTotals).map(k=>`<span class="pill">${esc(k)}: ${money(paidTotals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">—</span>';
 
   return `
   <h1 class="page-title">Card Statements</h1>
   <p class="page-sub">Upload ${esc(profileName(p))}'s SOA and confirm the transactions before saving.</p>
 
+  <div class="ledger-card" style="margin-bottom:20px;">
+    <div class="stat-label">Who's paid these statements</div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${paidPills}</div>
+  </div>
+
   ${draftExpenseHTML(p)}
 
   <div class="plain-card">
     <div class="card-title">History <span class="eyebrow">${list.length} statement${list.length===1?'':'s'}</span></div>
-    ${rows ? `<table><tr><th>Statement</th><th>Card</th><th>Total due</th><th>Txns</th><th></th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet — upload an SOA above.</div>`}
+    ${rows ? `<table><tr><th>Statement</th><th>Card</th><th>Total due</th><th>Paid by</th><th>Txns</th><th></th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet — upload an SOA above.</div>`}
   </div>`;
 }
 function statementTxnTable(s){
@@ -986,18 +1003,27 @@ function viewExpensesHousehold(){
     const c = t.category || 'Other';
     catTotals[c] = (catTotals[c]||0) + toBase(num(t.amount), s.currency);
   }));
+  const paidTotals = {};
+  all.forEach(s=>{ const who = s.paidBy||'Unspecified'; paidTotals[who] = (paidTotals[who]||0) + toBase(num(s.total_amount_due), s.currency); });
+  const paidPills = Object.keys(paidTotals).length
+    ? Object.keys(paidTotals).map(k=>`<span class="pill">${esc(k)}: ${money(paidTotals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
+    : '<span style="color:var(--ink-faint)">—</span>';
   const rows = all.sort((a,b)=>(b.statement_date||'').localeCompare(a.statement_date||''))
-    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td></tr>`).join('');
+    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td><td class="txt">${esc(s.paidBy||'—')}</td></tr>`).join('');
   return `
   <h1 class="page-title">Card Statements</h1>
   <p class="page-sub">Combined spend across both of you, by category, in ${esc(STATE.settings.baseCurrency)}.</p>
+  <div class="ledger-card" style="margin-bottom:20px;">
+    <div class="stat-label">Who's paid these statements <span class="eyebrow">Combined</span></div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${paidPills}</div>
+  </div>
   <div class="plain-card">
     <div class="card-title">Spend by category</div>
     <canvas id="categoryChart" height="100" data-cats='${esc(JSON.stringify(catTotals))}'></canvas>
   </div>
   <div class="plain-card">
     <div class="card-title">All statements</div>
-    ${rows ? `<table><tr><th>Who</th><th>Statement</th><th>Card</th><th>Total due</th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
+    ${rows ? `<table><tr><th>Who</th><th>Statement</th><th>Card</th><th>Total due</th><th>Paid by</th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
   </div>`;
 }
 function drawCategoryChart(){
@@ -1047,7 +1073,10 @@ function draftExpenseHTML(p){
       <div class="field"><label class="field-label">Card / bank</label><input type="text" value="${esc(d.card_name||'')}" oninput="updateDraftField('card_name',this.value)"></div>
       <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
     </div>
-    <div class="field"><label class="field-label">Total amount due</label><input type="number" step="0.01" value="${d.total_amount_due??''}" oninput="updateDraftField('total_amount_due',this.value)"></div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Total amount due</label><input type="number" step="0.01" value="${d.total_amount_due??''}" oninput="updateDraftField('total_amount_due',this.value)"></div>
+      <div class="field" style="max-width:170px"><label class="field-label">Paid by</label><select onchange="updateDraftField('paidBy',this.value)">${paidByOptions().map(o=>`<option ${d.paidBy===o?'selected':''}>${o}</option>`).join('')}</select></div>
+    </div>
     <label class="field-label">Transactions</label>
     <table><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th><th></th></tr>${txnRows || '<tr><td colspan="5" style="color:var(--ink-faint);font-family:var(--font-ui)">None listed</td></tr>'}</table>
     <div class="row-table-add" onclick="addDraftRow('transactions')">+ Add transaction</div>
@@ -1058,6 +1087,7 @@ function draftExpenseHTML(p){
     </div>
   </div>`;
 }
+function paidByOptions(){ return [profileName('a'), profileName('b'), 'Split/Joint']; }
 async function onSoaFileChosen(input){
   const file = input.files[0]; if(!file) return;
   const status = document.getElementById('soaExtractStatus');
@@ -1067,7 +1097,7 @@ async function onSoaFileChosen(input){
     const json = await extractDocument(base64, file.type || 'application/pdf', 'soa');
     STATE.draft = { kind:'expense', data:{
       statement_date: json.statement_date || '', card_name: json.card_name || '', currency:(json.currency||STATE.settings.baseCurrency).toUpperCase(),
-      total_amount_due: json.total_amount_due ?? null, minimum_amount_due: json.minimum_amount_due ?? null,
+      total_amount_due: json.total_amount_due ?? null, minimum_amount_due: json.minimum_amount_due ?? null, paidBy: profileName(STATE.currentProfile),
       transactions: Array.isArray(json.transactions) ? json.transactions : []
     }};
     render();
@@ -1076,13 +1106,14 @@ async function onSoaFileChosen(input){
   }
 }
 function startManualExpense(p){
-  STATE.draft = { kind:'expense', data:{ statement_date:'', card_name:'', currency:STATE.settings.baseCurrency, total_amount_due:null, minimum_amount_due:null, transactions:[] } };
+  STATE.draft = { kind:'expense', data:{ statement_date:'', card_name:'', currency:STATE.settings.baseCurrency, total_amount_due:null, minimum_amount_due:null, paidBy: profileName(p), transactions:[] } };
   render();
 }
 async function saveDraftExpense(p){
   const d = STATE.draft.data;
   const entry = { id: uid(), statement_date: d.statement_date, card_name: d.card_name, currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
-    total_amount_due: num(d.total_amount_due), minimum_amount_due: d.minimum_amount_due!=null ? num(d.minimum_amount_due) : null, transactions: d.transactions||[] };
+    total_amount_due: num(d.total_amount_due), minimum_amount_due: d.minimum_amount_due!=null ? num(d.minimum_amount_due) : null,
+    paidBy: d.paidBy || profileName(p), transactions: d.transactions||[] };
   STATE.expenses[p].push(entry);
   await apiSave('expenses_'+p, entry);
   STATE.draft = null;
@@ -1442,6 +1473,96 @@ async function saveDraftAsset(){
 async function deleteAsset(id){
   STATE.assets = STATE.assets.filter(a=>a.id!==id);
   await apiDelete('assets', id);
+  render();
+}
+
+/* ============================= CREDIT CARDS VIEW (reference only - never stores full numbers/CVV) ============================= */
+function viewCreditCards(){
+  const isHouse = STATE.currentProfile === 'house';
+  const list = STATE.creditCards.filter(c=> isHouse ? true : c.owner===STATE.currentProfile);
+  const totalLimit = list.reduce((t,c)=> t + toBase(num(c.creditLimit), c.currency), 0);
+  const rows = list.map(c=>`
+    <tr>
+      <td class="txt">${esc(c.nickname)}</td>
+      <td class="txt">${esc(c.issuer||'—')}</td>
+      <td class="txt">•••• ${esc(c.last4||'????')}</td>
+      <td>${money(c.creditLimit, c.currency)}</td>
+      <td class="txt">${c.statementDay ? 'Day '+esc(String(c.statementDay)) : '—'}</td>
+      <td class="txt">${c.dueDay ? 'Day '+esc(String(c.dueDay)) : '—'}</td>
+      <td>${num(c.annualFee) > 0 ? money(c.annualFee, c.currency) : '—'}</td>
+      ${isHouse ? `<td class="txt">${esc(profileName(c.owner))}</td>` : ''}
+      <td>${canEdit() ? `<a class="linklike" onclick="startEditCard('${c.id}')">edit</a> · <button class="icon-btn" onclick="deleteCard('${c.id}')">✕</button>` : ''}</td>
+    </tr>`).join('');
+
+  return `
+  <h1 class="page-title">Credit Cards</h1>
+  <p class="page-sub">A reference list — nickname, issuer, last 4 digits, limits and dates only. Never store full card numbers, CVV, or PINs here.</p>
+
+  ${!isHouse && canEdit() ? draftCardHTML() : (isHouse ? `<div class="notice" style="margin-bottom:20px;">Switch to an individual profile to add a new card.</div>` : '')}
+
+  <div class="plain-card">
+    <div class="card-title">On record <span class="eyebrow">Total limit ${money(totalLimit, STATE.settings.baseCurrency)}</span></div>
+    ${rows ? `<table><tr><th>Card</th><th>Issuer</th><th>Last 4</th><th>Limit</th><th>Statement</th><th>Due</th><th>Annual fee</th>${isHouse?'<th>Who</th>':''}<th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing added yet.</div>`}
+  </div>`;
+}
+function draftCardHTML(){
+  if(!(STATE.draft && STATE.draft.kind==='creditcard')){
+    return `<div class="plain-card">
+      <div class="card-title">Add a card</div>
+      <button class="btn" onclick="startAddCard()">Add new card</button>
+    </div>`;
+  }
+  const d = STATE.draft.data;
+  return `
+  <div class="plain-card">
+    <div class="card-title">${d.id ? 'Edit card' : 'New card'}</div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Nickname</label><input type="text" placeholder="e.g. BPI Rewards" value="${esc(d.nickname||'')}" oninput="updateDraftField('nickname',this.value)"></div>
+      <div class="field"><label class="field-label">Issuer / bank</label><input type="text" placeholder="e.g. BPI, Citi, RCBC" value="${esc(d.issuer||'')}" oninput="updateDraftField('issuer',this.value)"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Last 4 digits</label><input type="text" maxlength="4" inputmode="numeric" placeholder="1234" value="${esc(d.last4||'')}" oninput="updateDraftField('last4', this.value.replace(/\\D/g,'').slice(0,4))"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Credit limit</label><input type="number" step="0.01" value="${d.creditLimit??''}" oninput="updateDraftField('creditLimit',this.value)"></div>
+      <div class="field" style="max-width:110px"><label class="field-label">Currency</label><input type="text" list="ledgerCurrencyList" value="${esc(d.currency||STATE.settings.baseCurrency)}" oninput="updateDraftField('currency',this.value.toUpperCase())"></div>
+      <div class="field"><label class="field-label">Annual fee <span style="font-weight:400;text-transform:none">(optional)</span></label><input type="number" step="0.01" value="${d.annualFee??''}" oninput="updateDraftField('annualFee',this.value)"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label class="field-label">Statement day of month</label><input type="number" min="1" max="31" placeholder="e.g. 15" value="${d.statementDay??''}" oninput="updateDraftField('statementDay',this.value)"></div>
+      <div class="field"><label class="field-label">Due day of month</label><input type="number" min="1" max="31" placeholder="e.g. 5" value="${d.dueDay??''}" oninput="updateDraftField('dueDay',this.value)"></div>
+    </div>
+    <div class="field"><label class="field-label">Notes</label><input type="text" value="${esc(d.notes||'')}" oninput="updateDraftField('notes',this.value)"></div>
+    <div class="notice">Only the last 4 digits are kept — never the full card number, CVV, or PIN.</div>
+    <hr class="divider">
+    <div style="display:flex; gap:10px; margin-top:12px;">
+      <button class="btn" onclick="saveDraftCard()">Save card</button>
+      <button class="btn ghost" onclick="cancelDraft()">Discard</button>
+    </div>
+  </div>`;
+}
+function startAddCard(){
+  STATE.draft = { kind:'creditcard', data:{ nickname:'', issuer:'', last4:'', creditLimit:null, currency:STATE.settings.baseCurrency, annualFee:null, statementDay:null, dueDay:null, notes:'' } };
+  render();
+}
+function startEditCard(id){
+  const c = STATE.creditCards.find(x=>x.id===id); if(!c) return;
+  STATE.draft = { kind:'creditcard', data:{ ...c } };
+  render();
+}
+async function saveDraftCard(){
+  const d = STATE.draft.data;
+  if(!d.nickname){ alert('Give the card a nickname'); return; }
+  const entry = { id: d.id||uid(), owner: d.owner||STATE.currentProfile, nickname: d.nickname, issuer: d.issuer||'',
+    last4: (d.last4||'').replace(/\D/g,'').slice(0,4), creditLimit: num(d.creditLimit), currency:(d.currency||'').toUpperCase()||STATE.settings.baseCurrency,
+    annualFee: d.annualFee!=null ? num(d.annualFee) : 0, statementDay: d.statementDay?num(d.statementDay):null, dueDay: d.dueDay?num(d.dueDay):null, notes: d.notes||'' };
+  STATE.creditCards = STATE.creditCards.filter(c=>c.id!==entry.id);
+  STATE.creditCards.push(entry);
+  await apiSave('creditcards', entry);
+  STATE.draft = null;
+  render();
+}
+async function deleteCard(id){
+  STATE.creditCards = STATE.creditCards.filter(c=>c.id!==id);
+  await apiDelete('creditcards', id);
   render();
 }
 
@@ -1868,7 +1989,7 @@ function confirmResetAll(){
   resetAll();
 }
 async function resetAll(){
-  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]}; STATE.govtBenefits = {a:[],b:[]}; STATE.fxTransfers = []; STATE.savingsGoals = [];
+  STATE.settings = defaultSettings(); STATE.salary = {a:[],b:[]}; STATE.expenses = {a:[],b:[]}; STATE.snapshots = []; STATE.assets = []; STATE.recurring = {a:[],b:[]}; STATE.govtBenefits = {a:[],b:[]}; STATE.fxTransfers = []; STATE.savingsGoals = []; STATE.creditCards = [];
   await Promise.all([
     apiReplace('settings', [STATE.settings]),
     apiReplace('salary_a', []), apiReplace('salary_b', []),
@@ -1878,7 +1999,8 @@ async function resetAll(){
     apiReplace('recurring_a', []), apiReplace('recurring_b', []),
     apiReplace('govtbenefits_a', []), apiReplace('govtbenefits_b', []),
     apiReplace('fx_transfers', []),
-    apiReplace('savings_goals', [])
+    apiReplace('savings_goals', []),
+    apiReplace('creditcards', [])
   ]);
   render();
 }
