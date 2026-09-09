@@ -596,14 +596,12 @@ function viewDashboard(){
   const isHouse = STATE.currentProfile === 'house';
   const profileKey = isHouse ? 'house' : STATE.currentProfile;
   const profiles = isHouse ? ['a','b'] : [STATE.currentProfile];
-  let netWorth = 0, assetsVal = 0, expenseThisMonth = 0;
+  let expenseThisMonth = 0;
   const cashInvest = snapshotTotalBase(latestSnapshot()); // shared/consolidated - computed once, not per profile
   profiles.forEach(p=>{
     expenseThisMonth += monthExpenseTotalBase(p);
   });
-  assetsVal = assetsTotalBase(profileKey);
   const recurringMonthly = recurringMonthlyTotalBase(profileKey);
-  netWorth = cashInvest + assetsVal;
 
   const recentSalaryRows = profiles.flatMap(p => (STATE.salary[p]||[]).map(s=>({...s, _profile:p})))
     .sort((x,y)=> (y.pay_date||'').localeCompare(x.pay_date||'')).slice(0,4)
@@ -625,15 +623,16 @@ function viewDashboard(){
   const govtRows = Object.keys(govtTotals).sort((a,b)=>govtTotals[b]-govtTotals[a])
     .map(k=>`<tr><td class="txt">${esc(k)}</td><td>${money(govtTotals[k], base)}</td></tr>`).join('');
 
+  const hasRecurringData = Object.keys(recurringCategoryTotals(profileKey)).length > 0;
+
   return `
   <h1 class="page-title">Dashboard</h1>
   <p class="page-sub">${isHouse ? 'Combined household position' : profileName(STATE.currentProfile)+"'s position"} — figures converted to ${esc(base)} using your saved rates.</p>
 
-  <div class="grid-4">
-    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Net worth <span class="stamp" style="margin-left:6px;">Est.</span></div><div class="stat-value">${money(netWorth, base)}</div></div></div>
-    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Cash + Investments</div><div class="stat-value small">${money(cashInvest, base)}</div></div></div>
-    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Recurring spend</div><div class="stat-value small">${money(recurringMonthly, base)}<span style="font-size:12px;color:var(--ink-faint)">/mo</span></div></div></div>
-    <div class="ledger-card"><div class="stat-box"><div class="stat-label">This month's card spend</div><div class="stat-value small">${money(expenseThisMonth, base)}</div></div></div>
+  <div class="grid-3">
+    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Cash + Investments</div><div class="stat-value">${money(cashInvest, base)}</div></div></div>
+    <div class="ledger-card"><div class="stat-box"><div class="stat-label">Recurring spend</div><div class="stat-value">${money(recurringMonthly, base)}<span style="font-size:12px;color:var(--ink-faint)">/mo</span></div></div></div>
+    <div class="ledger-card"><div class="stat-box"><div class="stat-label">This month's card spend</div><div class="stat-value">${money(expenseThisMonth, base)}</div></div></div>
   </div>
 
   <div class="grid-2">
@@ -643,7 +642,9 @@ function viewDashboard(){
     </div>
     <div class="plain-card">
       <div class="card-title">Recurring spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
-      <canvas id="recurringChart" height="140" data-cats='${esc(JSON.stringify(recurringCategoryTotals(profileKey)))}'></canvas>
+      ${hasRecurringData
+        ? `<canvas id="recurringChart" height="140" data-cats='${esc(JSON.stringify(recurringCategoryTotals(profileKey)))}'></canvas><div id="recurringChartFallback" class="empty-state" style="display:none;">Chart couldn't load — check your connection and refresh.</div>`
+        : `<div class="empty-state">No active recurring expenses for ${isHouse?'either of you':esc(profileName(STATE.currentProfile))} yet — add one under Recurring Expenses.</div>`}
     </div>
   </div>
 
@@ -695,10 +696,16 @@ function drawNetWorthChart(){
 }
 function drawRecurringChart(){
   const canvas = document.getElementById('recurringChart');
-  if(!canvas || typeof Chart==='undefined') return;
+  if(!canvas) return; // no data - the empty-state message is already shown instead
+  if(typeof Chart === 'undefined'){
+    canvas.style.display = 'none';
+    const fb = document.getElementById('recurringChartFallback');
+    if(fb) fb.style.display = 'block';
+    return;
+  }
   const cats = JSON.parse(canvas.dataset.cats || '{}');
   const labels = Object.keys(cats);
-  if(!labels.length){ canvas.style.display='none'; return; }
+  if(!labels.length) return;
   new Chart(canvas.getContext('2d'), {
     type:'doughnut',
     data:{ labels, datasets:[{ data: labels.map(l=>cats[l]), backgroundColor:['#4FD1AE','#E8A33D','#D9736A','#6FA8DC','#B48EAD','#8FBF8F','#D9B14F','#7C93C3','#C97C7C','#9BA3A6','#5FBFB3'] }] },
@@ -1052,7 +1059,7 @@ function viewExpensesHousehold(){
     ? Object.keys(paidTotals).map(k=>`<span class="pill">${esc(k)}: ${money(paidTotals[k], STATE.settings.baseCurrency)}</span>`).join(' ')
     : '<span style="color:var(--ink-faint)">—</span>';
   const rows = all.sort((a,b)=>(b.statement_date||'').localeCompare(a.statement_date||''))
-    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td><td class="txt">${describePaidBy(s)}</td></tr>`).join('');
+    .map(s=>`<tr><td class="txt">${esc(profileName(s._p))}</td><td class="txt">${fmtDate(s.statement_date)}</td><td class="txt">${esc(s.card_name||'—')}</td><td>${money(s.total_amount_due,s.currency)}</td><td class="txt">${describePaidBy(s)}</td><td>${canEdit() ? `<a class="linklike" onclick="startEditExpense('${s._p}','${s.id}')">edit</a> · <button class="icon-btn" onclick="deleteExpense('${s._p}','${s.id}')">✕</button>` : ''}</td></tr>`).join('');
   return `
   <h1 class="page-title">Card Statements</h1>
   <p class="page-sub">Combined spend across both of you, by category, in ${esc(STATE.settings.baseCurrency)}.</p>
@@ -1066,7 +1073,7 @@ function viewExpensesHousehold(){
   </div>
   <div class="plain-card">
     <div class="card-title">All statements</div>
-    ${rows ? `<table><tr><th>Who</th><th>Statement</th><th>Card</th><th>Total due</th><th>Paid by</th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
+    ${rows ? `<table><tr><th>Who</th><th>Statement</th><th>Card</th><th>Total due</th><th>Paid by</th><th></th></tr>${rows}</table>` : `<div class="empty-state">Nothing saved yet.</div>`}
   </div>`;
 }
 function drawCategoryChart(){
@@ -1177,6 +1184,7 @@ function startEditExpense(p, id){
     paidByA = wasA ? total : (wasB ? 0 : (p==='a'?total:0));
     paidByB = wasB ? total : (wasA ? 0 : (p==='b'?total:0));
   }
+  STATE.currentProfile = p; // the edit form only renders on the individual view, so switch to it
   STATE.draft = { kind:'expense', data:{ ...s, paidByA, paidByB, splitManual:true } };
   render();
 }
