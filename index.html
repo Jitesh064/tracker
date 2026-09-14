@@ -649,9 +649,13 @@ function viewDashboard(){
 
   <div class="grid-2">
     <div class="plain-card">
-      <div class="card-title">Net worth over time <span class="eyebrow">${esc(base)}</span></div>
-      <canvas id="netWorthChart" height="140"></canvas>
-      <div id="netWorthChartFallback" class="empty-state" style="display:none;">Chart couldn't load — check your connection and refresh.</div>
+      <div class="card-title">Upcoming <span class="eyebrow">Next 30 days</span></div>
+      ${(() => {
+        const items = upcomingItems(profileKey, 30);
+        if(!items.length) return `<div class="empty-state">Nothing due or maturing in the next 30 days.</div>`;
+        const rows = items.map(it=>`<tr><td class="txt">${esc(it.type)}</td><td class="txt">${esc(it.label)}</td><td class="txt">${fmtDate(it.date.toISOString().slice(0,10))}</td><td class="txt">${it.days===0?'Today':it.days+' day'+(it.days===1?'':'s')}</td></tr>`).join('');
+        return `<table><tr><th>What</th><th>Item</th><th>Date</th><th>In</th></tr>${rows}</table>`;
+      })()}
     </div>
     <div class="plain-card">
       <div class="card-title">Spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
@@ -710,24 +714,31 @@ function savingsGoalsTotalBase(profileKey){
     return t + toBase(share, g.currency);
   }, 0);
 }
-function drawNetWorthChart(){
-  const canvas = document.getElementById('netWorthChart');
-  if(!canvas) return;
-  if(typeof Chart === 'undefined'){
-    canvas.style.display = 'none';
-    const fb = document.getElementById('netWorthChartFallback');
-    if(fb) fb.style.display = 'block';
-    return;
-  }
-  const list = [...(STATE.snapshots||[])].sort((a,b)=> a.date.localeCompare(b.date));
-  if(!list.length){ canvas.style.display='none'; return; }
-  const dates = list.map(s=>s.date);
-  const series = list.map(s=> snapshotTotalBase(s));
-  new Chart(canvas.getContext('2d'), {
-    type:'line',
-    data:{ labels: dates.map(fmtDate), datasets:[{ label:'Cash + Investments', data: series, borderColor:'#4FD1AE', backgroundColor:'rgba(79,209,174,0.12)', tension:0.25, fill:true, pointRadius:3 }] },
-    options:{ plugins:{ legend:{display:false} }, scales:{ x:{ ticks:{color:'#9BA3A6'}, grid:{color:'rgba(120,150,135,0.1)'} }, y:{ ticks:{color:'#9BA3A6'}, grid:{color:'rgba(120,150,135,0.1)'} } } }
+function upcomingItems(profileKey, horizonDays){
+  const items = [];
+  const today = new Date(); today.setHours(0,0,0,0);
+  const horizon = new Date(today); horizon.setDate(horizon.getDate() + (horizonDays||30));
+
+  STATE.creditCards.filter(c=> profileKey==='house' ? true : c.owner===profileKey).forEach(c=>{
+    if(!c.dueDay) return;
+    let next = new Date(today.getFullYear(), today.getMonth(), c.dueDay);
+    if(next < today) next = new Date(today.getFullYear(), today.getMonth()+1, c.dueDay);
+    if(next <= horizon){
+      items.push({ type:'Card due', label: c.nickname, date: next, days: Math.round((next-today)/86400000) });
+    }
   });
+
+  const goalProfiles = profileKey==='house' ? ['a','b'] : [profileKey];
+  (STATE.savingsGoals||[]).filter(g=> g.status==='Active' && g.maturityDate).forEach(g=>{
+    const relevant = profileKey==='house' || (profileKey==='a' && num(g.shareA)>0) || (profileKey==='b' && num(g.shareB)>0) || (!num(g.shareA) && !num(g.shareB));
+    if(!relevant) return;
+    const mat = new Date(g.maturityDate+'T00:00:00');
+    if(mat >= today && mat <= horizon){
+      items.push({ type:'Goal matures', label: g.name, date: mat, days: Math.round((mat-today)/86400000) });
+    }
+  });
+
+  return items.sort((a,b)=> a.date-b.date);
 }
 function drawRecurringChart(){
   const canvas = document.getElementById('recurringChart');
@@ -2258,7 +2269,7 @@ async function deleteUserAccount(id){
 
 /* ============================= POST-RENDER HOOKS ============================= */
 function afterRenderHooks(){
-  if(STATE.view==='dashboard'){ drawNetWorthChart(); drawRecurringChart(); }
+  if(STATE.view==='dashboard'){ drawRecurringChart(); }
   if(STATE.view==='expenses' && STATE.currentProfile==='house') drawCategoryChart();
 }
 
