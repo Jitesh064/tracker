@@ -4,7 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>The Joint Ledger</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script>
+// Try a couple of CDNs in sequence - some networks/ad-blockers block one but not the other.
+(function loadChartJs(urls, i){
+  if(i >= urls.length) return;
+  const s = document.createElement('script');
+  s.src = urls[i];
+  s.onerror = function(){ loadChartJs(urls, i+1); };
+  document.head.appendChild(s);
+})([
+  'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'
+], 0);
+</script>
 <style>
   :root{
     --bg:#12151A;
@@ -597,7 +609,7 @@ function viewDashboard(){
   const profileKey = isHouse ? 'house' : STATE.currentProfile;
   const profiles = isHouse ? ['a','b'] : [STATE.currentProfile];
   let expenseThisMonth = 0;
-  const cashInvest = snapshotTotalBase(latestSnapshot()); // shared/consolidated - computed once, not per profile
+  const cashInvest = snapshotTotalBase(latestSnapshot()) + savingsGoalsTotalBase(profileKey); // shared snapshot total + this profile's (or combined) savings goal shares
   profiles.forEach(p=>{
     expenseThisMonth += monthExpenseTotalBase(p);
   });
@@ -623,7 +635,7 @@ function viewDashboard(){
   const govtRows = Object.keys(govtTotals).sort((a,b)=>govtTotals[b]-govtTotals[a])
     .map(k=>`<tr><td class="txt">${esc(k)}</td><td>${money(govtTotals[k], base)}</td></tr>`).join('');
 
-  const hasRecurringData = Object.keys(recurringCategoryTotals(profileKey)).length > 0;
+  const hasRecurringData = Object.keys(spendByCategoryTotals(profileKey)).length > 0;
 
   return `
   <h1 class="page-title">Dashboard</h1>
@@ -639,12 +651,13 @@ function viewDashboard(){
     <div class="plain-card">
       <div class="card-title">Net worth over time <span class="eyebrow">${esc(base)}</span></div>
       <canvas id="netWorthChart" height="140"></canvas>
+      <div id="netWorthChartFallback" class="empty-state" style="display:none;">Chart couldn't load — check your connection and refresh.</div>
     </div>
     <div class="plain-card">
-      <div class="card-title">Recurring spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
+      <div class="card-title">Spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
       ${hasRecurringData
-        ? `<canvas id="recurringChart" height="140" data-cats='${esc(JSON.stringify(recurringCategoryTotals(profileKey)))}'></canvas><div id="recurringChartFallback" class="empty-state" style="display:none;">Chart couldn't load — check your connection and refresh.</div>`
-        : `<div class="empty-state">No active recurring expenses for ${isHouse?'either of you':esc(profileName(STATE.currentProfile))} yet — add one under Recurring Expenses.</div>`}
+        ? `<canvas id="recurringChart" height="140" data-cats='${esc(JSON.stringify(spendByCategoryTotals(profileKey)))}'></canvas><div id="recurringChartFallback" class="empty-state" style="display:none;">Chart couldn't load — check your connection and refresh.</div>`
+        : `<div class="empty-state">No recurring expenses or card statements this month for ${isHouse?'either of you':esc(profileName(STATE.currentProfile))} yet.</div>`}
     </div>
   </div>
 
@@ -670,7 +683,7 @@ function viewDashboard(){
   </div>
   `;
 }
-function recurringCategoryTotals(profileKey){
+function spendByCategoryTotals(profileKey){
   const profiles = profileKey==='house' ? ['a','b'] : [profileKey];
   const totals = {};
   profiles.forEach(p=>{
@@ -679,11 +692,33 @@ function recurringCategoryTotals(profileKey){
       totals[c] = (totals[c]||0) + toBase(monthlyEquivalent(num(r.amount), r.frequency), r.currency);
     });
   });
+  const ym = new Date().toISOString().slice(0,7);
+  profiles.forEach(p=>{
+    (STATE.expenses[p]||[]).filter(s=>(s.statement_date||'').slice(0,7)===ym).forEach(s=>{
+      (s.transactions||[]).forEach(t=>{
+        const c = t.category || 'Other';
+        totals[c] = (totals[c]||0) + toBase(num(t.amount), s.currency);
+      });
+    });
+  });
   return totals;
+}
+function savingsGoalsTotalBase(profileKey){
+  return (STATE.savingsGoals||[]).filter(g=> g.status !== 'Withdrawn').reduce((t,g)=>{
+    if(profileKey === 'house') return t + toBase(num(g.principal), g.currency);
+    const share = profileKey==='a' ? num(g.shareA) : num(g.shareB);
+    return t + toBase(share, g.currency);
+  }, 0);
 }
 function drawNetWorthChart(){
   const canvas = document.getElementById('netWorthChart');
-  if(!canvas || typeof Chart==='undefined') return;
+  if(!canvas) return;
+  if(typeof Chart === 'undefined'){
+    canvas.style.display = 'none';
+    const fb = document.getElementById('netWorthChartFallback');
+    if(fb) fb.style.display = 'block';
+    return;
+  }
   const list = [...(STATE.snapshots||[])].sort((a,b)=> a.date.localeCompare(b.date));
   if(!list.length){ canvas.style.display='none'; return; }
   const dates = list.map(s=>s.date);
