@@ -222,6 +222,7 @@ const STATE = {
   recurring: { a:[], b:[] },
   govtBenefits: { a:[], b:[] },
   draft: null, // in-progress extraction review object
+  expenseFilter: { month:'', category:'' }, // transient UI filter for the Dashboard expense breakdown, not persisted
 };
 let authToken = localStorage.getItem('ledger_token') || '';
 let currentUser = null; // { id, username, name, role }
@@ -647,23 +648,35 @@ function viewDashboard(){
     <div class="ledger-card"><div class="stat-box"><div class="stat-label">This month's card spend</div><div class="stat-value">${money(expenseThisMonth, base)}</div></div></div>
   </div>
 
-  <div class="grid-2">
+  ${(() => {
+    const months = availableExpenseMonths(profileKey);
+    const filtered = filteredTransactions(profileKey, STATE.expenseFilter);
+    const filteredTotal = filtered.reduce((t,tr)=> t + toBase(num(tr.amount), tr._currency), 0);
+    const rows = filtered.slice(0,50).map(t=>`<tr>${isHouse?`<td class="txt">${esc(profileName(t._p))}</td>`:''}<td class="txt">${fmtDate(t.date)}</td><td class="txt">${esc(t.merchant||'—')}</td><td class="txt">${esc(t.category||'Other')}</td><td class="txt">${esc(t._card||'—')}</td><td>${money(t.amount, t._currency)}</td></tr>`).join('');
+    return `
     <div class="plain-card">
-      <div class="card-title">Upcoming <span class="eyebrow">Next 30 days</span></div>
-      ${(() => {
-        const items = upcomingItems(profileKey, 30);
-        if(!items.length) return `<div class="empty-state">Nothing due or maturing in the next 30 days.</div>`;
-        const rows = items.map(it=>`<tr><td class="txt">${esc(it.type)}</td><td class="txt">${esc(it.label)}</td><td class="txt">${fmtDate(it.date.toISOString().slice(0,10))}</td><td class="txt">${it.days===0?'Today':it.days+' day'+(it.days===1?'':'s')}</td></tr>`).join('');
-        return `<table><tr><th>What</th><th>Item</th><th>Date</th><th>In</th></tr>${rows}</table>`;
-      })()}
-    </div>
-    <div class="plain-card">
-      <div class="card-title">Spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
+      <div class="card-title">Expense breakdown <span class="eyebrow">Filter to see where it's going</span></div>
+      <div class="field-row">
+        <div class="field"><label class="field-label">Month</label><select onchange="setExpenseFilter('month', this.value)">
+          <option value="">All months</option>
+          ${months.map(m=>`<option value="${m}" ${STATE.expenseFilter.month===m?'selected':''}>${monthLabel(m)}</option>`).join('')}
+        </select></div>
+        <div class="field"><label class="field-label">Category</label><select onchange="setExpenseFilter('category', this.value)">
+          <option value="">All categories</option>
+          ${CATEGORY_OPTIONS.map(c=>`<option ${STATE.expenseFilter.category===c?'selected':''}>${c}</option>`).join('')}
+        </select></div>
+      </div>
+      <div class="stat-value small" style="margin:4px 0 14px;">${money(filteredTotal, base)} <span style="font-size:12px;color:var(--ink-faint);font-family:var(--font-ui);">(${filtered.length} transaction${filtered.length===1?'':'s'})</span></div>
+      ${rows ? `<table><tr>${isHouse?'<th>Who</th>':''}<th>Date</th><th>Merchant</th><th>Category</th><th>Card</th><th>Amount</th></tr>${rows}</table>${filtered.length>50?`<p class="page-sub" style="margin-top:8px;">Showing latest 50 of ${filtered.length}</p>`:''}` : `<div class="empty-state">No transactions match this filter.</div>`}
+    </div>`;
+  })()}
+
+  <div class="plain-card">
+    <div class="card-title">Spend by category <span class="eyebrow">Monthly, ${esc(base)}</span></div>
       ${hasRecurringData
         ? `<canvas id="recurringChart" height="140" data-cats='${esc(JSON.stringify(spendByCategoryTotals(profileKey)))}'></canvas><div id="recurringChartFallback" class="empty-state" style="display:none;">Chart couldn't load — check your connection and refresh.</div>`
         : `<div class="empty-state">No recurring expenses or card statements this month for ${isHouse?'either of you':esc(profileName(STATE.currentProfile))} yet.</div>`}
     </div>
-  </div>
 
   <div class="grid-2">
     <div class="plain-card">
@@ -714,31 +727,29 @@ function savingsGoalsTotalBase(profileKey){
     return t + toBase(share, g.currency);
   }, 0);
 }
-function upcomingItems(profileKey, horizonDays){
-  const items = [];
-  const today = new Date(); today.setHours(0,0,0,0);
-  const horizon = new Date(today); horizon.setDate(horizon.getDate() + (horizonDays||30));
-
-  STATE.creditCards.filter(c=> profileKey==='house' ? true : c.owner===profileKey).forEach(c=>{
-    if(!c.dueDay) return;
-    let next = new Date(today.getFullYear(), today.getMonth(), c.dueDay);
-    if(next < today) next = new Date(today.getFullYear(), today.getMonth()+1, c.dueDay);
-    if(next <= horizon){
-      items.push({ type:'Card due', label: c.nickname, date: next, days: Math.round((next-today)/86400000) });
-    }
+function availableExpenseMonths(profileKey){
+  const profiles = profileKey==='house' ? ['a','b'] : [profileKey];
+  const months = new Set();
+  profiles.forEach(p=> (STATE.expenses[p]||[]).forEach(s=> (s.transactions||[]).forEach(t=>{ if(t.date) months.add(t.date.slice(0,7)); })));
+  return [...months].sort().reverse();
+}
+function filteredTransactions(profileKey, filter){
+  const profiles = profileKey==='house' ? ['a','b'] : [profileKey];
+  const rows = [];
+  profiles.forEach(p=>{
+    (STATE.expenses[p]||[]).forEach(s=>{
+      (s.transactions||[]).forEach(t=>{
+        if(filter.month && (t.date||'').slice(0,7) !== filter.month) return;
+        if(filter.category && (t.category||'Other') !== filter.category) return;
+        rows.push({ ...t, _p:p, _currency: s.currency||STATE.settings.baseCurrency, _card: s.card_name });
+      });
+    });
   });
-
-  const goalProfiles = profileKey==='house' ? ['a','b'] : [profileKey];
-  (STATE.savingsGoals||[]).filter(g=> g.status==='Active' && g.maturityDate).forEach(g=>{
-    const relevant = profileKey==='house' || (profileKey==='a' && num(g.shareA)>0) || (profileKey==='b' && num(g.shareB)>0) || (!num(g.shareA) && !num(g.shareB));
-    if(!relevant) return;
-    const mat = new Date(g.maturityDate+'T00:00:00');
-    if(mat >= today && mat <= horizon){
-      items.push({ type:'Goal matures', label: g.name, date: mat, days: Math.round((mat-today)/86400000) });
-    }
-  });
-
-  return items.sort((a,b)=> a.date-b.date);
+  return rows.sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+}
+function setExpenseFilter(field, value){
+  STATE.expenseFilter[field] = value;
+  render();
 }
 function drawRecurringChart(){
   const canvas = document.getElementById('recurringChart');
